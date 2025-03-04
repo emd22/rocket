@@ -7,8 +7,14 @@ pub const TVec2 = TVec(@Vector(2, f32));
 pub const TVec3 = TVec(@Vector(3, f32));
 pub const TVec4 = TVec(@Vector(4, f32));
 
+pub const TVec2i = TVec(@Vector(2, i32));
+
 pub inline fn Vec2(x: f32, y: f32) TVec2 {
     return TVec2{ .v = .{ x, y } };
+}
+
+pub inline fn Vec2i(x: i32, y: i32) TVec2i {
+    return TVec2i{ .v = .{ x, y } };
 }
 
 pub inline fn Vec3(x: f32, y: f32, z: f32) TVec3 {
@@ -57,19 +63,21 @@ pub fn TVec(comptime T: type) type {
         };
 
         pub const Zero = Self{ .v = @splat(0) };
+        pub const Up = Self{ .v = .{ 0, 1, 0 } };
+        pub const Right = Self{ .v = .{ 1, 0, 0 } };
 
         /// Retrieve the X component of the vector.
-        pub inline fn GetX(self: Self) ElementType {
+        pub inline fn X(self: Self) ElementType {
             return self.v[0];
         }
 
         /// Retrieve the Y component of the vector.
-        pub inline fn GetY(self: Self) ElementType {
+        pub inline fn Y(self: Self) ElementType {
             return self.v[1];
         }
 
         /// Retrieve the Z component of the vector.
-        pub inline fn GetZ(self: Self) ElementType {
+        pub inline fn Z(self: Self) ElementType {
             if (comptime TLen < 3) {
                 @compileError("Type does not contain Z component");
             }
@@ -77,7 +85,7 @@ pub fn TVec(comptime T: type) type {
         }
 
         /// Retrieve the W component of the vector.
-        pub inline fn GetW(self: Self) ElementType {
+        pub inline fn W(self: Self) ElementType {
             if (comptime TLen < 4) {
                 @compileError("Type does not contain W component");
             }
@@ -85,16 +93,8 @@ pub fn TVec(comptime T: type) type {
             return self.v[3];
         }
 
-        pub inline fn Sin(self: Self) Self {
-            return Self{
-                .v = @sin(self.v),
-            };
-        }
-
-        pub inline fn Cos(self: Self) Self {
-            return Self{
-                .v = @sin(self.v),
-            };
+        pub inline fn FromV(v: Type) Self {
+            return Self{ .v = v };
         }
 
         pub inline fn Equals(self: Self, other: Self) bool {
@@ -105,7 +105,11 @@ pub fn TVec(comptime T: type) type {
             return @sqrt(@reduce(.Add, self.v * self.v));
         }
 
-        pub inline fn Normalize(self: Self) Self {
+        pub inline fn Normalize(self: *Self) void {
+            self.v /= @as(T, @splat(self.Length()));
+        }
+
+        pub inline fn Normalized(self: Self) Self {
             return Self{
                 .v = self.v / @as(T, @splat(self.Length())),
             };
@@ -172,6 +176,54 @@ pub fn TVec(comptime T: type) type {
                     -(ax * bz - bx * az),
                     ax * by - bx * ay,
                 },
+            };
+        }
+
+        pub inline fn RotateX(self: *Self, angle: f32) void {
+            if (comptime TLen != 3) {
+                @compileError("Expected a Vector3 type");
+            }
+            const sv = @sin(angle);
+            const cv = @cos(angle);
+
+            const x, const y, const z = self.v;
+
+            self.v = .{
+                x,
+                y * cv - z * sv,
+                y * sv + z * cv,
+            };
+        }
+
+        pub inline fn RotateY(self: *Self, angle: f32) void {
+            if (comptime TLen != 3) {
+                @compileError("Expected a Vector3 type");
+            }
+            const sv = @sin(angle);
+            const cv = @cos(angle);
+
+            const x, const y, const z = self.v;
+
+            self.v = .{
+                x * cv + z * sv,
+                y,
+                -x * sv + z * cv,
+            };
+        }
+
+        pub inline fn RotateZ(self: *Self, angle: f32) void {
+            if (comptime TLen != 3) {
+                @compileError("Expected a Vector3 type");
+            }
+            const sv = @sin(angle);
+            const cv = @cos(angle);
+
+            const x, const y, const z = self.v;
+
+            self.v = .{
+                x * cv - y * sv,
+                x * sv + y * cv,
+                z,
             };
         }
 

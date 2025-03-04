@@ -119,7 +119,7 @@ pub fn OnMouseMove(xrel: f32, yrel: f32) void {
     // Player.Camera.RotateAxis(.X, -0.001 * yrel * DeltaTime);
     // Player.Camera.RotateAxis(.Y, -0.001 * xrel * DeltaTime);
     //
-    Player.Camera.Rotate(m.Vec3(-0.001 * xrel * DeltaTime, -0.001 * yrel * DeltaTime, 0));
+    Player.Camera.Rotate(m.Vec3(-0.001 * xrel * DeltaTime, 0.001 * yrel * DeltaTime, 0));
 
     // var qa = m.TQuat.Identity();
     // var qb = m.TQuat.Identity();
@@ -181,11 +181,22 @@ fn Render() void {
         .store_op = c.SDL_GPU_STOREOP_STORE,
     };
 
+    const depth_target_info = c.SDL_GPUDepthStencilTargetInfo{
+        .texture = RenderContext.DepthTexture,
+        .cycle = true,
+        .clear_depth = 1,
+        .clear_stencil = 0,
+        .load_op = c.SDL_GPU_LOADOP_CLEAR,
+        .store_op = c.SDL_GPU_STOREOP_STORE,
+        .stencil_load_op = c.SDL_GPU_LOADOP_CLEAR,
+        .stencil_store_op = c.SDL_GPU_STOREOP_STORE,
+    };
+
     const render_pass = c.SDL_BeginGPURenderPass(
         command_buffer,
         &color_target_info,
         1,
-        null,
+        &depth_target_info,
     ) orelse return;
 
     c.SDL_BindGPUGraphicsPipeline(render_pass, Renderer.Pipeline);
@@ -464,7 +475,7 @@ pub fn main() !void {
     defer model.Destroy();
 
     const window_size = RenderContext.WindowSize;
-    const aspect_ratio = window_size.GetX() / window_size.GetY();
+    const aspect_ratio: f32 = @as(f32, @floatFromInt(window_size.X())) / @as(f32, @floatFromInt(window_size.Y()));
 
     Player.Camera.UpdateProjectionMatrix(.{ .AspectRatio = aspect_ratio });
 
@@ -474,36 +485,36 @@ pub fn main() !void {
     //     .{ .Pos = .{ 0, 1, 0 } },
     // };
     //
-    var test_mesh_verts = [_]Vertex{
-        .{ .Position = .{ -0.5, -0.5, 0.5 } }, // 0: Bottom-left
-        .{ .Position = .{ 0.5, -0.5, 0.5 } }, // 1: Bottom-right
-        .{ .Position = .{ 0.5, 0.5, 0.5 } }, // 2: Top-right
-        .{ .Position = .{ -0.5, 0.5, 0.5 } }, // 3: Top-left
+    // var test_mesh_verts = [_]Vertex{
+    //     .{ .Position = .{ -0.5, -0.5, 0.5 } }, // 0: Bottom-left
+    //     .{ .Position = .{ 0.5, -0.5, 0.5 } }, // 1: Bottom-right
+    //     .{ .Position = .{ 0.5, 0.5, 0.5 } }, // 2: Top-right
+    //     .{ .Position = .{ -0.5, 0.5, 0.5 } }, // 3: Top-left
 
-        // Back face
-        .{ .Position = .{ -0.5, -0.5, -0.5 } }, // 4: Bottom-left
-        .{ .Position = .{ 0.5, -0.5, -0.5 } }, // 5: Bottom-right
-        .{ .Position = .{ 0.5, 0.5, -0.5 } }, // 6: Top-right
-        .{ .Position = .{ -0.5, 0.5, -0.5 } }, // 7: Top-left
-    };
+    //     // Back face
+    //     .{ .Position = .{ -0.5, -0.5, -0.5 } }, // 4: Bottom-left
+    //     .{ .Position = .{ 0.5, -0.5, -0.5 } }, // 5: Bottom-right
+    //     .{ .Position = .{ 0.5, 0.5, -0.5 } }, // 6: Top-right
+    //     .{ .Position = .{ -0.5, 0.5, -0.5 } }, // 7: Top-left
+    // };
 
-    var test_mesh_indices = [_]u32{
-        // Front face
-        0, 1, 2, 0, 2, 3,
-        // Back face
-        4, 5, 6, 4, 6, 7,
-        // Left face
-        0, 3, 7, 0, 7, 4,
-        // Right face
-        1, 2, 6, 1, 6, 5,
-        // Top face
-        2, 3, 7, 2, 7, 6,
-        // Bottom face
-        0, 1, 5, 0, 5, 4,
-    };
+    // var test_mesh_indices = [_]u32{
+    //     // Front face
+    //     0, 1, 2, 0, 2, 3,
+    //     // Back face
+    //     4, 5, 6, 4, 6, 7,
+    //     // Left face
+    //     0, 3, 7, 0, 7, 4,
+    //     // Right face
+    //     1, 2, 6, 1, 6, 5,
+    //     // Top face
+    //     2, 3, 7, 2, 7, 6,
+    //     // Bottom face
+    //     0, 1, 5, 0, 5, 4,
+    // };
 
     // test_mesh.UploadToGPU(vertices, indices);
-    test_mesh.UploadToGPU(&test_mesh_verts, &test_mesh_indices);
+    test_mesh.UploadToGPU(vertices, indices);
 
     while (running) {
         ProcessEvents();

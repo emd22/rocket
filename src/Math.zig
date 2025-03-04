@@ -6,6 +6,7 @@ const FSimd = @import("./Math/SIMD.zig");
 
 // Vector.zig
 pub const Vec2 = FVector.Vec2;
+pub const Vec2i = FVector.Vec2i;
 pub const Vec3 = FVector.Vec3;
 pub const Vec4 = FVector.Vec4;
 

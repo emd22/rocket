@@ -25,7 +25,7 @@ pub fn PerspectiveCamera(options: CameraPerspectiveOptions) type {
     return struct {
         Camera: BaseCamera = .{
             .ProjectionMatrix = m.Mat4.Perspective(
-                options.Fov * std.math.pi / 180.0,
+                options.Fov * (std.math.pi / 180.0),
                 options.AspectRatio,
                 options.Near,
                 options.Far,
@@ -36,11 +36,13 @@ pub fn PerspectiveCamera(options: CameraPerspectiveOptions) type {
         AngleX: f32 = 0,
         AngleY: f32 = 0,
 
+        Direction: m.TVec3 = m.TVec3.Zero,
+
         const Self = @This();
 
         pub fn UpdateProjectionMatrix(self: *Self, settings: CameraPerspectiveOptions) void {
             self.Camera.ProjectionMatrix = m.Mat4.Perspective(
-                settings.Fov * std.math.pi / 180.0,
+                settings.Fov * (std.math.pi / 180.0),
                 settings.AspectRatio,
                 settings.Near,
                 settings.Far,
@@ -51,40 +53,19 @@ pub fn PerspectiveCamera(options: CameraPerspectiveOptions) type {
         }
 
         pub inline fn Move(self: *Self, offset: m.TVec3) void {
-            var rotated_offset = offset;
-            // var quat = self.Camera.Rotation
-            // const rotation_matrix = m.Mat3.FromQuaternion(self.Camera.Rotation);
-            // const rotation_matrix = m.Mat4.FromQuaternion(self.Camera.Rotation, m.Vec3(0, 0, 0));
+            // var rotated_offset = offset;
 
-            // rotated_offset.MultiplyMat3(rotation_matrix);
-            rotated_offset.RotateQuat(self.Camera.Rotation);
-            // quat.v[3] = 0;
+            const forward_vector = -self.Direction.v * @as(m.TVec3.Type, @splat(offset.Z()));
+            const right_vector = self.Direction.Cross(m.TVec3.Up).v * @as(m.TVec3.Type, @splat(offset.X()));
 
-            // rotated_offset.RotateQuat(quat);
-            // const off = offset.v * rotated_offset.v;
-            self.Camera.Position.v += rotated_offset.v;
+            self.Camera.Position.v += (forward_vector + right_vector);
 
             self.NeedsUpdate = true;
         }
 
         pub fn Rotate(self: *Self, by: m.TVec3) void {
-            // var quat = m.TQuat.Identity();
-
-            self.AngleX += by.v[0];
-            self.AngleY += by.v[1];
-
-            // camera yaw
-            const yaw = m.TQuat.FromRotation(&.{.X}, self.AngleY);
-            // camera pitch(and the output quat)
-            var pitch = m.TQuat.FromRotation(&.{.Y}, self.AngleX);
-
-            // multiply pitch * yaw
-            pitch.Multiply(yaw);
-
-            pitch.Normalize();
-
-            self.Camera.Rotation = pitch;
-            // self.Camera.Rotation;
+            self.AngleX += by.X();
+            self.AngleY += by.Y();
         }
 
         pub inline fn MoveAxis(self: *Self, axis: m.TVec3.Component, by: f32) void {
@@ -97,11 +78,11 @@ pub fn PerspectiveCamera(options: CameraPerspectiveOptions) type {
                 return;
             }
 
-            const rotation = m.Mat4.FromQuaternion(self.Camera.Rotation, m.Vec3(0, 0, 0));
+            self.Direction = m.Vec3(@sin(self.AngleX), self.AngleY, @cos(self.AngleX));
+            self.Direction.Normalize();
+            const target = self.Camera.Position.Subtract(self.Direction);
 
-            // Multiply the translation matrix with the rotation matrix
-            // TODO: optimize this to multiply the quaternion directly with the matrix.
-            self.Camera.ViewMatrix = m.Mat4.AsTranslation(self.Camera.Position).Multiply(rotation);
+            self.Camera.ViewMatrix = m.Mat4.LookAtColMajor(self.Camera.Position, target, m.TVec3.Up);
 
             self.NeedsUpdate = false;
         }

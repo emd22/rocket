@@ -4,7 +4,7 @@ const c = @import("CLibs.zig").c;
 const Log = @import("Log.zig");
 const Shader = @import("Shader.zig").Shader;
 
-const TVec2 = @import("Math/Vector.zig").TVec2;
+const TVec2i = @import("Math/Vector.zig").TVec2i;
 
 // var RenderPipeline: *c.SDL_GPUGraphicsPipeline = undefined;
 
@@ -17,10 +17,12 @@ pub const Context = struct {
     Window: ?*c.SDL_Window = null,
     Device: ?*c.SDL_GPUDevice = null,
 
-    WindowSize: TVec2 = TVec2{ .v = .{ 1024, 720 } },
+    WindowSize: TVec2i = TVec2i{ .v = .{ 1024, 720 } },
 
     DebugMode: bool = true,
     VSync: bool = true,
+
+    DepthTexture: ?*c.SDL_GPUTexture = null,
 };
 
 pub var RenderContext = Context{};
@@ -63,6 +65,20 @@ pub const Renderer = struct {
 
         self.Shaders.Vertex.Destroy(&RenderContext);
         self.Shaders.Fragment.Destroy(&RenderContext);
+
+        RenderContext.DepthTexture = c.SDL_CreateGPUTexture(
+            RenderContext.Device,
+            &c.SDL_GPUTextureCreateInfo{
+                .type = c.SDL_GPU_TEXTURETYPE_2D,
+                .width = @intCast(RenderContext.WindowSize.X()),
+                .height = @intCast(RenderContext.WindowSize.Y()),
+                .layer_count_or_depth = 1,
+                .num_levels = 1,
+                .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
+                .format = c.SDL_GPU_TEXTUREFORMAT_D16_UNORM,
+                .usage = c.SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET,
+            },
+        );
     }
 
     pub fn Destroy(self: *Self) void {
@@ -132,6 +148,8 @@ pub const Renderer = struct {
                     ),
                 },
             },
+            .has_depth_stencil_target = true,
+            .depth_stencil_format = c.SDL_GPU_TEXTUREFORMAT_D16_UNORM,
         };
 
         const pipeline_create_info: c.SDL_GPUGraphicsPipelineCreateInfo = .{
@@ -141,9 +159,15 @@ pub const Renderer = struct {
             .vertex_shader = vertex_shader.Shader,
             .fragment_shader = fragment_shader.Shader,
             .rasterizer_state = c.SDL_GPURasterizerState{
-                .front_face = c.SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE,
+                .front_face = c.SDL_GPU_FRONTFACE_CLOCKWISE,
                 .fill_mode = c.SDL_GPU_FILLMODE_FILL,
                 .cull_mode = c.SDL_GPU_CULLMODE_NONE,
+            },
+            .depth_stencil_state = .{
+                .enable_depth_write = true,
+                .enable_depth_test = true,
+                .enable_stencil_test = false,
+                .compare_op = c.SDL_GPU_COMPAREOP_LESS,
             },
         };
 
@@ -211,6 +235,8 @@ pub const Backend = struct {
 
     pub fn Destroy(self: Self) void {
         _ = self;
+
+        c.SDL_ReleaseGPUTexture(RenderContext.Device, RenderContext.DepthTexture);
 
         c.SDL_ReleaseWindowFromGPUDevice(RenderContext.Device, RenderContext.Window);
 

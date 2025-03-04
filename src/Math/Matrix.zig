@@ -89,7 +89,7 @@ pub const Mat4 = struct {
     }
 
     pub fn Identity() Self {
-        comptime return Self{
+        return Self{
             .v = .{
                 .{ 1, 0, 0, 0 },
                 .{ 0, 1, 0, 0 },
@@ -100,22 +100,22 @@ pub const Mat4 = struct {
     }
 
     pub fn Perspective(hfov: f32, aspect: f32, near: f32, far: f32) Self {
-        const S = 1.0 / (@tan(hfov / 2.0));
+        const S = 1.0 / (@tan(hfov * 0.5));
 
         return Self{
             .v = .{
                 .{ S / aspect, 0, 0, 0 },
                 .{ 0, S, 0, 0 },
-                .{ 0, 0, far / (near - far), -1 },
-                .{ 0, 0, (near * far) / (near - far), 0 },
+                .{ 0, 0, -(far + near) / (far - near), -1 },
+                .{ 0, 0, -(2.0 * far * near) / (far - near), 0 },
             },
         };
     }
 
-    pub fn LookAt(eyePos: m.TVec3, eyeTarget: m.TVec3, eyeUp: m.TVec3) Self {
+    pub fn LookAtColMajor(eyePos: m.TVec3, eyeTarget: m.TVec3, eyeUp: m.TVec3) Self {
         const target_to_position = m.TVec3{ .v = eyePos.v - eyeTarget.v };
-        const a = target_to_position.Normalize();
-        const b = m.TVec3.Normalize(m.TVec3.Cross(eyeUp, a));
+        const a = target_to_position.Normalized();
+        const b = m.TVec3.Normalized(m.TVec3.Cross(eyeUp, a));
         const c = a.Cross(b);
 
         return Self{
@@ -124,6 +124,70 @@ pub const Mat4 = struct {
                 .{ b.v[1], c.v[1], a.v[1], 0 },
                 .{ b.v[2], c.v[2], a.v[2], 0 },
                 .{ -b.Dot(eyePos), -c.Dot(eyePos), -a.Dot(eyePos), 1 },
+            },
+        };
+    }
+
+    pub fn Transpose(self: Self) Self {
+        const temp1 = @shuffle(f32, self.v[0], self.v[1], [4]i32{ 0, 1, ~@as(i32, 0), ~@as(i32, 1) });
+        const temp3 = @shuffle(f32, self.v[0], self.v[1], [4]i32{ 2, 3, ~@as(i32, 2), ~@as(i32, 3) });
+        const temp2 = @shuffle(f32, self.v[2], self.v[3], [4]i32{ 0, 1, ~@as(i32, 0), ~@as(i32, 1) });
+        const temp4 = @shuffle(f32, self.v[2], self.v[3], [4]i32{ 2, 3, ~@as(i32, 2), ~@as(i32, 3) });
+
+        return Self{
+            .v = .{
+                @shuffle(f32, temp1, temp2, [4]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) }),
+                @shuffle(f32, temp1, temp2, [4]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) }),
+                @shuffle(f32, temp3, temp4, [4]i32{ 0, 2, ~@as(i32, 0), ~@as(i32, 2) }),
+                @shuffle(f32, temp3, temp4, [4]i32{ 1, 3, ~@as(i32, 1), ~@as(i32, 3) }),
+            },
+        };
+    }
+
+    pub fn MakeRotation(components: m.TVec3, angle: f32) Mat4 {
+        const s = @sin(angle);
+        const c = @cos(angle);
+
+        const i = 1.0 - c;
+
+        const x, const y, const z = components.v;
+
+        const value = Self{
+            .v = .{
+                .{ i * x * x + c, i * x * y - z * s, i * z * x + y * s, 0.0 },
+                .{ i * x * y + z * s, i * y * y + c, i * y * z - x * s, 0.0 },
+                .{ i * z * x - y * s, i * y * z + x * s, i * z * z + c, 0.0 },
+                .{ 0.0, 0.0, 0.0, 1.0 },
+            },
+        };
+
+        return value;
+    }
+
+    pub fn RotationX(rad: f32) Self {
+        const rcos = @cos(rad);
+        const rsin = @sin(rad);
+
+        return Self{
+            .v = .{
+                .{ 1, 0, 0, 0 },
+                .{ 0, rcos, rsin, 0 },
+                .{ 0, -rsin, rcos, 0 },
+                .{ 0, 0, 0, 1 },
+            },
+        };
+    }
+
+    pub fn RotationY(rad: f32) Self {
+        const rcos = @cos(rad);
+        const rsin = @sin(rad);
+
+        return Self{
+            .v = .{
+                .{ rcos, 0, -rsin, 0 },
+                .{ 0, 0, 0, 0 },
+                .{ rsin, 0, rcos, 0 },
+                .{ 0, 0, 0, 1 },
             },
         };
     }
@@ -262,54 +326,11 @@ pub const Mat3 = struct {
     }
 
     pub fn Identity() Self {
-        comptime return Self{
+        return Self{
             .v = .{
                 .{ 1, 0, 0 },
                 .{ 0, 1, 0 },
                 .{ 0, 0, 1 },
-            },
-        };
-    }
-
-    pub fn Perspective(hfov: f32, aspect: f32, near: f32, far: f32) Self {
-        const S = 1.0 / (@tan(hfov / 2.0));
-
-        return Self{
-            .v = .{
-                .{ S / aspect, 0, 0, 0 },
-                .{ 0, S, 0, 0 },
-                .{ 0, 0, far / (near - far), -1 },
-                .{ 0, 0, (near * far) / (near - far), 0 },
-            },
-        };
-    }
-
-    pub fn LookAt(eyePos: m.TVec3, eyeTarget: m.TVec3, eyeUp: m.TVec3) Self {
-        const target_to_position = m.TVec3{ .v = eyePos.v - eyeTarget.v };
-        const a = target_to_position.Normalize();
-        const b = m.TVec3.Normalize(m.TVec3.Cross(eyeUp, a));
-        const c = a.Cross(b);
-
-        return Self{
-            .v = .{
-                .{ b.v[0], c.v[0], a.v[0], 0 },
-                .{ b.v[1], c.v[1], a.v[1], 0 },
-                .{ b.v[2], c.v[2], a.v[2], 0 },
-                .{ -b.Dot(eyePos), -c.Dot(eyePos), -a.Dot(eyePos), 1 },
-            },
-        };
-    }
-
-    pub fn RotationZ(rad: f32) Self {
-        const rcos = @cos(rad);
-        const rsin = @sin(rad);
-
-        return Self{
-            .v = .{
-                .{ rcos, rsin, 0, 0 },
-                .{ -rsin, rcos, 0, 0 },
-                .{ 0, 0, 1, 0 },
-                .{ 0, 0, 0, 1 },
             },
         };
     }
@@ -360,7 +381,7 @@ test "matrix multiply" {
 
 test "matrix3 from quaternion" {
     var quat = q.Quat(0.7071, 0.0, 0.7071, 0.0);
-    quat.Normalize();
+    quat.Normalized();
     var mat = Mat3.FromQuaternion0(quat);
     Log.Debug("Matrix from quaternion: ", .{});
     mat.Print();
