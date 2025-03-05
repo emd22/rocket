@@ -151,71 +151,65 @@ fn Render() void {
 
     DeltaTime = @as(f32, @floatFromInt(CurrentTick - LastTick)) / 1_000_000.0;
 
-    const command_buffer = c.SDL_AcquireGPUCommandBuffer(RenderContext.Device) orelse {
-        FRenderer.Panic("Could not acquire command buffer", .{});
-    };
+    // const command_buffer = c.SDL_AcquireGPUCommandBuffer(RenderContext.Device) orelse {
+    //     FRenderer.Panic("Could not acquire command buffer", .{});
+    // };
 
-    var swapchain_texture: ?*c.SDL_GPUTexture = null;
-    if (!c.SDL_WaitAndAcquireGPUSwapchainTexture(
-        command_buffer,
-        RenderContext.Window,
-        &swapchain_texture,
-        null,
-        null,
-    )) {
-        FRenderer.Panic("Could not acquire swapchain", .{});
-    }
+    // var swapchain_texture: ?*c.SDL_GPUTexture = null;
+    // if (!c.SDL_WaitAndAcquireGPUSwapchainTexture(
+    //     command_buffer,
+    //     RenderContext.Window,
+    //     &swapchain_texture,
+    //     null,
+    //     null,
+    // )) {
+    //     FRenderer.Panic("Could not acquire swapchain", .{});
+    // }
 
-    if (swapchain_texture == null) {
-        FRenderer.Panic("Swapchain texture is null", .{});
-    }
+    // if (swapchain_texture == null) {
+    //     FRenderer.Panic("Swapchain texture is null", .{});
+    // }
 
     ObjectRotate();
 
-    var mvp_matrix = ModelMatrix.Multiply(Player.Camera.GetVPMatrix());
+    const mvp_matrix = ModelMatrix.Multiply(Player.Camera.GetVPMatrix());
+    _ = mvp_matrix;
 
-    const color_target_info: c.SDL_GPUColorTargetInfo = .{
-        .texture = swapchain_texture,
-        .clear_color = c.SDL_FColor{ .r = 0, .g = 0, .b = 0, .a = 1.0 },
-        .load_op = c.SDL_GPU_LOADOP_CLEAR,
-        .store_op = c.SDL_GPU_STOREOP_STORE,
-    };
+    // const color_target_info: c.SDL_GPUColorTargetInfo = .{
+    //     .texture = swapchain_texture,
+    //     .clear_color = c.SDL_FColor{ .r = 0, .g = 0, .b = 0, .a = 1.0 },
+    //     .load_op = c.SDL_GPU_LOADOP_CLEAR,
+    //     .store_op = c.SDL_GPU_STOREOP_STORE,
+    // };
 
-    const depth_target_info = c.SDL_GPUDepthStencilTargetInfo{
-        .texture = RenderContext.DepthTexture,
-        .cycle = true,
-        .clear_depth = 1,
-        .clear_stencil = 0,
-        .load_op = c.SDL_GPU_LOADOP_CLEAR,
-        .store_op = c.SDL_GPU_STOREOP_STORE,
-        .stencil_load_op = c.SDL_GPU_LOADOP_CLEAR,
-        .stencil_store_op = c.SDL_GPU_STOREOP_STORE,
-    };
+    // const depth_target_info = c.SDL_GPUDepthStencilTargetInfo{
+    //     .texture = RenderContext.DepthTexture,
+    //     .cycle = true,
+    //     .clear_depth = 1,
+    //     .clear_stencil = 0,
+    //     .load_op = c.SDL_GPU_LOADOP_CLEAR,
+    //     .store_op = c.SDL_GPU_STOREOP_STORE,
+    //     .stencil_load_op = c.SDL_GPU_LOADOP_CLEAR,
+    //     .stencil_store_op = c.SDL_GPU_STOREOP_STORE,
+    // };
 
-    const render_pass = c.SDL_BeginGPURenderPass(
-        command_buffer,
-        &color_target_info,
-        1,
-        &depth_target_info,
-    ) orelse return;
+    // const render_pass = c.SDL_BeginGPURenderPass(
+    //     command_buffer,
+    //     &color_target_info,
+    //     1,
+    //     &depth_target_info,
+    // ) orelse return;
 
-    c.SDL_BindGPUGraphicsPipeline(render_pass, Renderer.Pipeline);
+    // c.SDL_BindGPUGraphicsPipeline(render_pass, Renderer.Pipeline);
     // c.SDL_DrawGPUPrimitives(render_pass, 3, 1, 0, 0);
-    test_mesh.Render(render_pass, command_buffer, &mvp_matrix, &ModelMatrix);
+    // test_mesh.Render(render_pass, command_buffer, &mvp_matrix, &ModelMatrix);
 
-    c.SDL_EndGPURenderPass(render_pass);
+    // c.SDL_EndGPURenderPass(render_pass);
 
-    if (!c.SDL_SubmitGPUCommandBuffer(command_buffer)) {
-        FRenderer.Panic("Error submitting GPU buffer", .{});
-    }
-
-    // if (DeltaTime < RenderContext.GoalFrametime) {
-    //     // if we have more FPS than the goal frametime, we will wait for the remaining amount of time
-    //     // until we hit our target.
-    //     const wait_time: u64 = @as(u64, @intFromFloat(((RenderContext.GoalFrametime) - DeltaTime) * 1_000_000));
-    //     std.debug.print("delta: {d}, delay: {d}\n", .{ DeltaTime, ((RenderContext.GoalFrametime) - DeltaTime) });
-    //     c.SDL_DelayNS(wait_time);
+    // if (!c.SDL_SubmitGPUCommandBuffer(command_buffer)) {
+    //     FRenderer.Panic("Error submitting GPU buffer", .{});
     // }
+
     LastTick = CurrentTick;
 }
 
@@ -253,102 +247,108 @@ const Mesh = struct {
     IndexBuffer: ?*c.SDL_GPUBuffer = null,
     IndexCount: u32 = 0,
 
-    fn TransferBufferToGPU(comptime T: type, buffer: []T, output_buffer: ?*c.SDL_GPUBuffer, cmd_buffer: *c.SDL_GPUCommandBuffer) *c.SDL_GPUTransferBuffer {
-        const buffer_size: u32 = @intCast(buffer.len * @sizeOf(T));
+    // fn TransferBufferToGPU(comptime T: type, buffer: []T, output_buffer: ?*c.SDL_GPUBuffer, cmd_buffer: *c.SDL_GPUCommandBuffer) *c.SDL_GPUTransferBuffer {
+    // const buffer_size: u32 = @intCast(buffer.len * @sizeOf(T));
 
-        const transfer_buffer = c.SDL_CreateGPUTransferBuffer(RenderContext.Device, &c.SDL_GPUTransferBufferCreateInfo{
-            .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-            .size = buffer_size,
-        }) orelse {
-            FRenderer.Panic("Could not upload data to GPU buffer", .{});
-        };
+    // const transfer_buffer = c.SDL_CreateGPUTransferBuffer(RenderContext.Device, &c.SDL_GPUTransferBufferCreateInfo{
+    //     .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+    //     .size = buffer_size,
+    // }) orelse {
+    //     FRenderer.Panic("Could not upload data to GPU buffer", .{});
+    // };
 
-        const transfer_data_c = c.SDL_MapGPUTransferBuffer(RenderContext.Device, transfer_buffer, false) orelse {
-            FRenderer.Panic("Error getting mapped transfer buffer!", .{});
-        };
+    // const transfer_data_c = c.SDL_MapGPUTransferBuffer(RenderContext.Device, transfer_buffer, false) orelse {
+    //     FRenderer.Panic("Error getting mapped transfer buffer!", .{});
+    // };
 
-        const transfer_data: [*]T = @ptrCast(@alignCast(transfer_data_c));
+    // const transfer_data: [*]T = @ptrCast(@alignCast(transfer_data_c));
 
-        // @memcpy(transfer_data, &vertices);
-        // copy all data to our transfer buffer
-        std.mem.copyForwards(T, transfer_data[0..buffer.len], buffer);
+    // copy all data to our transfer buffer
+    // std.mem.copyForwards(T, transfer_data[0..buffer.len], buffer);
 
-        c.SDL_UnmapGPUTransferBuffer(RenderContext.Device, transfer_buffer);
+    // c.SDL_UnmapGPUTransferBuffer(RenderContext.Device, transfer_buffer);
 
-        const upload_copy_pass = c.SDL_BeginGPUCopyPass(cmd_buffer);
+    // const upload_copy_pass = c.SDL_BeginGPUCopyPass(cmd_buffer);
 
-        c.SDL_UploadToGPUBuffer(
-            upload_copy_pass,
-            &c.SDL_GPUTransferBufferLocation{ .transfer_buffer = transfer_buffer, .offset = 0 },
-            &c.SDL_GPUBufferRegion{ .buffer = output_buffer, .offset = 0, .size = buffer_size },
-            false,
-        );
+    // c.SDL_UploadToGPUBuffer(
+    //     upload_copy_pass,
+    //     &c.SDL_GPUTransferBufferLocation{ .transfer_buffer = transfer_buffer, .offset = 0 },
+    //     &c.SDL_GPUBufferRegion{ .buffer = output_buffer, .offset = 0, .size = buffer_size },
+    //     false,
+    // );
 
-        c.SDL_EndGPUCopyPass(upload_copy_pass);
+    // c.SDL_EndGPUCopyPass(upload_copy_pass);
 
-        return transfer_buffer;
-    }
+    // return transfer_buffer;
+    // }
 
     pub fn UploadToGPU(self: *Mesh, vertices: []Vertex, indices: ?[]u32) void {
-        self.VertexCount = @intCast(vertices.len);
+        _ = self;
+        _ = vertices;
+        _ = indices;
+        // self.VertexCount = @intCast(vertices.len);
 
-        Log.Info("Mesh vertex count: {d}", .{self.VertexCount});
+        // Log.Info("Mesh vertex count: {d}", .{self.VertexCount});
 
-        const vbo_size: u32 = @intCast(@sizeOf(Vertex) * vertices.len);
+        // const vbo_size: u32 = @intCast(@sizeOf(Vertex) * vertices.len);
 
-        const vbo_create_info = c.SDL_GPUBufferCreateInfo{
-            .usage = c.SDL_GPU_BUFFERUSAGE_VERTEX,
-            .size = vbo_size,
-        };
+        // const vbo_create_info = c.SDL_GPUBufferCreateInfo{
+        //     .usage = c.SDL_GPU_BUFFERUSAGE_VERTEX,
+        //     .size = vbo_size,
+        // };
 
-        self.VertexBuffer = c.SDL_CreateGPUBuffer(RenderContext.Device, &vbo_create_info);
+        // self.VertexBuffer = c.SDL_CreateGPUBuffer(RenderContext.Device, &vbo_create_info);
 
-        const upload_cmd_buffer = c.SDL_AcquireGPUCommandBuffer(RenderContext.Device);
+        // const upload_cmd_buffer = c.SDL_AcquireGPUCommandBuffer(RenderContext.Device);
 
-        var index_tbuffer: ?*c.SDL_GPUTransferBuffer = null;
+        // var index_tbuffer: ?*c.SDL_GPUTransferBuffer = null;
 
-        if (indices) |t_indices| {
-            self.IndexCount = @intCast(t_indices.len);
+        // if (indices) |t_indices| {
+        //     self.IndexCount = @intCast(t_indices.len);
 
-            Log.Info("Mesh index count: {d}", .{self.IndexCount});
+        //     Log.Info("Mesh index count: {d}", .{self.IndexCount});
 
-            const ibo_size: u32 = @intCast(@sizeOf(u32) * t_indices.len);
-            const ibo_create_info = c.SDL_GPUBufferCreateInfo{
-                .usage = c.SDL_GPU_BUFFERUSAGE_INDEX,
-                .size = ibo_size,
-            };
-            self.IndexBuffer = c.SDL_CreateGPUBuffer(RenderContext.Device, &ibo_create_info);
-            index_tbuffer = TransferBufferToGPU(u32, indices.?, self.IndexBuffer, upload_cmd_buffer.?);
-        }
+        //     const ibo_size: u32 = @intCast(@sizeOf(u32) * t_indices.len);
+        //     const ibo_create_info = c.SDL_GPUBufferCreateInfo{
+        //         .usage = c.SDL_GPU_BUFFERUSAGE_INDEX,
+        //         .size = ibo_size,
+        //     };
+        //     self.IndexBuffer = c.SDL_CreateGPUBuffer(RenderContext.Device, &ibo_create_info);
+        //     index_tbuffer = TransferBufferToGPU(u32, indices.?, self.IndexBuffer, upload_cmd_buffer.?);
+        // }
 
-        // submit data to the GPU
-        const vertex_tbuffer = TransferBufferToGPU(Vertex, vertices, self.VertexBuffer, upload_cmd_buffer.?);
+        // // submit data to the GPU
+        // const vertex_tbuffer = TransferBufferToGPU(Vertex, vertices, self.VertexBuffer, upload_cmd_buffer.?);
 
-        // submit the command buffer for both transfers
-        if (!c.SDL_SubmitGPUCommandBuffer(upload_cmd_buffer)) {
-            FRenderer.Panic("Could not submit command buffer", .{});
-        }
-        // release the transfer buffers
-        c.SDL_ReleaseGPUTransferBuffer(RenderContext.Device, vertex_tbuffer);
+        // // submit the command buffer for both transfers
+        // if (!c.SDL_SubmitGPUCommandBuffer(upload_cmd_buffer)) {
+        //     FRenderer.Panic("Could not submit command buffer", .{});
+        // }
+        // // release the transfer buffers
+        // c.SDL_ReleaseGPUTransferBuffer(RenderContext.Device, vertex_tbuffer);
 
-        if (index_tbuffer != null) {
-            c.SDL_ReleaseGPUTransferBuffer(RenderContext.Device, index_tbuffer);
-        }
+        // if (index_tbuffer != null) {
+        //     c.SDL_ReleaseGPUTransferBuffer(RenderContext.Device, index_tbuffer);
+        // }
     }
 
     pub fn Render(self: Mesh, render_pass: *c.SDL_GPURenderPass, command_buffer: *c.SDL_GPUCommandBuffer, mvp_matrix: *m.Mat4, model_matrix: *m.Mat4) void {
-        c.SDL_PushGPUVertexUniformData(command_buffer, 0, &mvp_matrix.v, @sizeOf(m.Mat4));
-        c.SDL_PushGPUVertexUniformData(command_buffer, 1, &model_matrix.v, @sizeOf(m.Mat4));
+        _ = self;
+        _ = render_pass;
+        _ = command_buffer;
+        _ = mvp_matrix;
+        _ = model_matrix;
+        // c.SDL_PushGPUVertexUniformData(command_buffer, 0, &mvp_matrix.v, @sizeOf(m.Mat4));
+        // c.SDL_PushGPUVertexUniformData(command_buffer, 1, &model_matrix.v, @sizeOf(m.Mat4));
 
-        c.SDL_BindGPUVertexBuffers(render_pass, 0, &c.SDL_GPUBufferBinding{ .buffer = self.VertexBuffer, .offset = 0 }, 1);
-        // std.debug.print("SIZE: {d}\n", .{@sizeOf(m.Mat4)});
+        // c.SDL_BindGPUVertexBuffers(render_pass, 0, &c.SDL_GPUBufferBinding{ .buffer = self.VertexBuffer, .offset = 0 }, 1);
 
-        if (self.IndexCount != 0) {
-            c.SDL_BindGPUIndexBuffer(render_pass, &c.SDL_GPUBufferBinding{ .buffer = self.IndexBuffer, .offset = 0 }, c.SDL_GPU_INDEXELEMENTSIZE_32BIT);
-            c.SDL_DrawGPUIndexedPrimitives(render_pass, self.IndexCount, 1, 0, 0, 0);
-        } else {
-            c.SDL_DrawGPUPrimitives(render_pass, self.VertexCount, 1, 0, 0);
-        }
+        // if (self.IndexCount != 0) {
+        //     c.SDL_BindGPUIndexBuffer(render_pass, &c.SDL_GPUBufferBinding{ .buffer = self.IndexBuffer, .offset = 0 }, c.SDL_GPU_INDEXELEMENTSIZE_32BIT);
+        //     c.SDL_DrawGPUIndexedPrimitives(render_pass, self.IndexCount, 1, 0, 0, 0);
+        // } else {
+        //     c.SDL_DrawGPUPrimitives(render_pass, self.VertexCount, 1, 0, 0);
+        // }
     }
 };
 

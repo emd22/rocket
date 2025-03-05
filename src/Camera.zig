@@ -78,8 +78,12 @@ pub fn PerspectiveCamera(options: CameraPerspectiveOptions) type {
                 return;
             }
 
-            self.Direction = m.Vec3(@sin(self.AngleX), self.AngleY, @cos(self.AngleX));
-            self.Direction.Normalize();
+            self.Direction = m.Vec3(
+                @sin(self.AngleX),
+                self.AngleY,
+                @cos(self.AngleX),
+            ).Normalized();
+
             const target = self.Camera.Position.Subtract(self.Direction);
 
             self.Camera.ViewMatrix = m.Mat4.LookAtColMajor(self.Camera.Position, target, m.TVec3.Up);

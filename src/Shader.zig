@@ -11,16 +11,16 @@ const ShaderLoadOptions = struct {
     StorageTextures: u32 = 0,
 };
 
-fn ShaderTypeToSDL(shader_type: Shader.Type) c.SDL_GPUShaderStage {
-    switch (shader_type) {
-        Shader.Type.Vertex => {
-            return c.SDL_GPU_SHADERSTAGE_VERTEX;
-        },
-        Shader.Type.Fragment => {
-            return c.SDL_GPU_SHADERSTAGE_FRAGMENT;
-        },
-    }
-}
+// fn ShaderTypeToSDL(shader_type: Shader.Type) c.SDL_GPUShaderStage {
+//     switch (shader_type) {
+//         Shader.Type.Vertex => {
+//             return c.SDL_GPU_SHADERSTAGE_VERTEX;
+//         },
+//         Shader.Type.Fragment => {
+//             return c.SDL_GPU_SHADERSTAGE_FRAGMENT;
+//         },
+//     }
+// }
 
 fn ShaderGetEntrypoint(fmt: c.SDL_GPUShaderFormat) ?[]const u8 {
     // std.debug.print("shader format: {d}\n", .{fmt});
@@ -62,21 +62,23 @@ pub const Shader = struct {
     }
 
     pub fn Load(self: *Shader, context: *RenderContext, shader_type: Type, filename: []const u8, options: ShaderLoadOptions) !void {
-        errdefer {
-            std.debug.print("Error loading shader '{s}'\n", .{filename});
-        }
+        errdefer Log.Error("Error loading shader '{s}'", .{filename});
 
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
         defer if (gpa.deinit() != .ok) @panic("Could not deinit allocator!");
 
         const allocator = gpa.allocator();
 
+        _ = context;
+        _ = shader_type;
+        _ = options;
+
         // convert the shader stage (vertex, fragment, etc.) to SDL's values
-        const stage: c.SDL_GPUShaderStage = ShaderTypeToSDL(shader_type);
+        // const stage: c.SDL_GPUShaderStage = ShaderTypeToSDL(shader_type);
 
         // const shader_format: c.SDL_GPUShaderFormat = c.SDL_GetGPUShaderFormats(context.device);
-        const shader_format = c.SDL_GPU_SHADERFORMAT_MSL;
-        const backend_formats = c.SDL_GetGPUShaderFormats(context.Device);
+        // const shader_format = c.SDL_GPU_SHADERFORMAT_MSL;
+        // const backend_formats = c.SDL_GetGPUShaderFormats(context.Device);
 
         const file = try std.fs.cwd().openFile(filename, .{});
 
@@ -85,22 +87,22 @@ pub const Shader = struct {
 
         file.close();
 
-        const shader_info: c.SDL_GPUShaderCreateInfo = .{
-            .code = buffer.ptr,
-            .code_size = buffer.len,
-            .entrypoint = ShaderGetEntrypoint(backend_formats).?.ptr,
-            .format = shader_format,
-            .stage = stage,
+        // const shader_info: c.SDL_GPUShaderCreateInfo = .{
+        //     .code = buffer.ptr,
+        //     .code_size = buffer.len,
+        //     .entrypoint = ShaderGetEntrypoint(backend_formats).?.ptr,
+        //     .format = shader_format,
+        //     .stage = stage,
 
-            .num_samplers = options.Samplers,
-            .num_uniform_buffers = options.UniformBuffers,
-            .num_storage_buffers = options.StorageBuffers,
-            .num_storage_textures = options.StorageTextures,
-        };
+        //     .num_samplers = options.Samplers,
+        //     .num_uniform_buffers = options.UniformBuffers,
+        //     .num_storage_buffers = options.StorageBuffers,
+        //     .num_storage_textures = options.StorageTextures,
+        // };
 
-        self.Shader = c.SDL_CreateGPUShader(context.Device, &shader_info) orelse {
-            @panic("Failed to create GPU shader");
-        };
+        // self.Shader = c.SDL_CreateGPUShader(context.Device, &shader_info) orelse {
+        //     @panic("Failed to create GPU shader");
+        // };
 
         // after the GPU buffer is created, we can free the file contents
         allocator.free(buffer);
@@ -114,7 +116,9 @@ pub const Shader = struct {
             return;
         }
 
-        c.SDL_ReleaseGPUShader(context.Device, self.Shader);
+        _ = context;
+
+        // c.SDL_ReleaseGPUShader(context.Device, self.Shader);
         self.Initialized = false;
     }
 };

@@ -46,6 +46,8 @@ pub fn build(b: *std.Build) void {
     sdl_lib.defineCMacro("SDL_ASSERT_LEVEL", "2");
     exe.root_module.linkLibrary(sdl_lib);
 
+    exe.linkSystemLibrary("vulkan");
+
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).

@@ -7,4 +7,7 @@ pub const c = @cImport({
     @cInclude("SDL3/SDL_main.h");
 
     @cInclude("cgltf.h");
+
+    @cInclude("SDL3/SDL_vulkan.h");
+    @cInclude("vulkan/vulkan.h");
 });
