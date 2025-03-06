@@ -236,6 +236,17 @@ pub const Backend = struct {
             Panic("Could not initialize Vulkan renderer", .{});
         };
 
+        r.AttachToWindow(RenderContext.Window.?);
+
+        // create our renderer device
+        {
+            var device = r.Device{};
+            device.CreateLogicalDevice();
+            r.SelectDevice(device);
+        }
+
+        r.CreateSwapchain(RenderContext.WindowSize);
+
         // if (!c.SDL_ClaimWindowForGPUDevice(RenderContext.Device, RenderContext.Window)) {
         //     Panic("Could not claim window for graphics device!", .{});
         // }

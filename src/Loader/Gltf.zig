@@ -8,9 +8,7 @@ pub const GLTFModel = struct {
     const Self = @This();
 
     pub fn Load(self: *Self, filename: [:0]const u8) void {
-        if (c.cgltf_parse_file(&.{}, filename.ptr, &(self.data)) == c.cgltf_result_success and c.cgltf_load_buffers(&.{}, self.data, filename.ptr) == c.cgltf_result_success) {
-            std.debug.print("Loaded!\n", .{});
-        } else {
+        if (c.cgltf_parse_file(&.{}, filename.ptr, &(self.data)) == c.cgltf_result_success and c.cgltf_load_buffers(&.{}, self.data, filename.ptr) != c.cgltf_result_success) {
             std.debug.print("Loading failed\n", .{});
         }
     }

@@ -35,6 +35,10 @@ pub fn GetMutex() *std.Thread.Mutex {
     return &LogMutex;
 }
 
+pub inline fn YesNo(value: bool) []const u8 {
+    return if (value) "Yes" else "No";
+}
+
 fn InternLog(comptime level: Level, comptime fmt: []const u8, args: anytype) void {
     // omit when we are building in Release mode
     if (comptime (level != .Error and level != .Fatal) and Builtin.mode != .Debug) {

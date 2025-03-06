@@ -11,6 +11,7 @@ pub const Vec3 = FVector.Vec3;
 pub const Vec4 = FVector.Vec4;
 
 pub const TVec2 = FVector.TVec2;
+pub const TVec2i = FVector.TVec2i;
 pub const TVec3 = FVector.TVec3;
 pub const TVec4 = FVector.TVec4;
 

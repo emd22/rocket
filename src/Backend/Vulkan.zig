@@ -8,7 +8,15 @@ pub const VULKAN_DEBUG = true;
 pub const VkContext = struct {
     Instance: c.VkInstance = undefined,
     AvailableExtensions: ?[]c.VkExtensionProperties = null,
+
     DebugMessenger: c.VkDebugUtilsMessengerEXT = undefined,
+
+    Surface: c.VkSurfaceKHR = null,
+    Swapchain: c.VkSwapchainKHR = null,
+
+    Device: ?Device = null,
+
+    const Allocator: [*c]c.VkAllocationCallbacks = null;
 
     pub fn Destroy(self: *VkContext) void {
         if (self.AvailableExtensions) |extensions| {
@@ -115,10 +123,6 @@ fn MakeInstanceExtensionList(requested_extensions: [][:0]const u8) std.ArrayList
     }
 
     for (0..needed_extenion_count) |i| {
-        // const c_str = vk_needed_extensions[i];
-        // const len: usize = std.mem.len(c_str);
-        // const str = c_str[0..len];
-
         try total_extensions.append(vk_needed_extensions[i]);
     }
 
@@ -202,7 +206,7 @@ pub fn SetupDebugMessenger() void {
     const result = CreateDebugUtilsMessengerEXT(
         Context.Instance,
         &create_info,
-        null,
+        VkContext.Allocator,
         &Context.DebugMessenger,
     );
 
@@ -272,6 +276,7 @@ pub fn Init() RenderError!VkContext {
     }
 
     PrintValidationLayers();
+
     const requested_validation_layers = [_][*:0]const u8{
         "VK_LAYER_KHRONOS_validation",
     };
@@ -286,7 +291,7 @@ pub fn Init() RenderError!VkContext {
         .flags = c.VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR,
     };
 
-    const result = c.vkCreateInstance(&instance_info, null, &Context.Instance);
+    const result = c.vkCreateInstance(&instance_info, VkContext.Allocator, &Context.Instance);
 
     if (result != c.VK_SUCCESS) {
         Panic("Error creating Vulkan instance", result, .{});
@@ -297,18 +302,313 @@ pub fn Init() RenderError!VkContext {
     return Context;
 }
 
+pub fn AttachToWindow(window: *c.SDL_Window) void {
+    const success = c.SDL_Vulkan_CreateSurface(window, Context.Instance, VkContext.Allocator, &Context.Surface);
+
+    if (!success) {
+        Log.RenFatal("Could not attach Vulkan instance to window! [SDLError: {s}]\n", .{c.SDL_GetError()});
+        @panic("Renderer error");
+    }
+}
+
+pub const QueueFamilies = struct {
+    RawFamilies: ?[]c.VkQueueFamilyProperties = null,
+
+    Graphics: ?u32 = null,
+    Present: ?u32 = null,
+
+    pub fn GetQueueFamilies(self: *QueueFamilies, device: *Device) []c.VkQueueFamilyProperties {
+        if (self.QueueFamilies == null) {
+            self.FindQueueFamilies(device);
+        }
+
+        return self.QueueFamilies.?;
+    }
+
+    pub fn FindQueueFamilies(self: *QueueFamilies, device: *Device) void {
+        errdefer @panic("Cannot get queue families");
+
+        var family_count: u32 = 0;
+
+        c.vkGetPhysicalDeviceQueueFamilyProperties(device.Physical, &family_count, null);
+
+        if (self.RawFamilies == null) {
+            self.RawFamilies = try allocator.alloc(c.VkQueueFamilyProperties, family_count);
+        }
+
+        c.vkGetPhysicalDeviceQueueFamilyProperties(device.Physical.?, &family_count, self.RawFamilies.?.ptr);
+
+        for (self.RawFamilies.?, 0..) |family, index| {
+            // check for a graphics family
+            if ((family.queueFlags & c.VK_QUEUE_GRAPHICS_BIT) == 1) {
+                self.Graphics = @intCast(index);
+            }
+
+            // check for a presentation family
+            var present_support: u32 = 0;
+            const result = c.vkGetPhysicalDeviceSurfaceSupportKHR(device.Physical, @as(u32, @intCast(index)), Context.Surface, &present_support);
+            if (result != c.VK_SUCCESS) {
+                Panic("Could not get physical device surface support(presentation queue family)", result, .{});
+            }
+            Log.Info("Present support: {d}", .{present_support});
+            if (present_support > 0) {
+                self.Present = @as(u32, @intCast(index));
+            }
+        }
+    }
+
+    pub fn Destroy(self: *QueueFamilies) void {
+        if (self.RawFamilies != null) {
+            allocator.free(self.RawFamilies.?);
+        }
+    }
+};
+
+pub const Device = struct {
+    Physical: c.VkPhysicalDevice = null,
+    Device: c.VkDevice = null,
+    QueueFamilies: QueueFamilies = QueueFamilies{},
+
+    GraphicsQueue: c.VkQueue = null,
+    PresentQueue: c.VkQueue = null,
+
+    fn IsPhysicalDeviceSuitable(device: c.VkPhysicalDevice) bool {
+        var props = c.VkPhysicalDeviceProperties{};
+        var features = c.VkPhysicalDeviceFeatures{};
+
+        c.vkGetPhysicalDeviceFeatures(device, &features);
+        c.vkGetPhysicalDeviceProperties(device, &props);
+
+        var rdev = Device{ .Physical = device };
+        if (rdev.QueueFamilies.RawFamilies == null) {
+            rdev.QueueFamilies.FindQueueFamilies(&rdev);
+        }
+        defer rdev.Destroy();
+
+        const has_families = (rdev.QueueFamilies.Graphics != null and rdev.QueueFamilies.Present != null);
+
+        // NOTE: MoltenVK only supports up to version 1.2, but most of these features can be
+        // used through extensions.
+        const version = props.apiVersion;
+        if (version >= c.VK_MAKE_VERSION(1, 2, 0) and has_families) {
+            Log.Info("Suitable Physical Device: {s}", .{props.deviceName});
+            return true;
+        }
+
+        Log.Warn("Failed Device: {d}.{d}.{d}, Graphics Family?: {s}, Present Family?: {s}", .{
+            c.VK_VERSION_MAJOR(version),
+            c.VK_VERSION_MINOR(version),
+            c.VK_VERSION_PATCH(version),
+            Log.YesNo(rdev.QueueFamilies.Graphics != null),
+            Log.YesNo(rdev.QueueFamilies.Present != null),
+        });
+
+        return false;
+    }
+
+    fn QueryQueues(self: *Device) void {
+        c.vkGetDeviceQueue(self.Device, self.QueueFamilies.Graphics.?, 0, &self.GraphicsQueue);
+        c.vkGetDeviceQueue(self.Device, self.QueueFamilies.Present.?, 0, &self.PresentQueue);
+    }
+
+    pub fn CreateLogicalDevice(self: *Device) void {
+        if (self.Physical == null) {
+            self.PickPhsyicalDevice();
+        }
+        if (self.QueueFamilies.Graphics == null) {
+            self.QueueFamilies.FindQueueFamilies(self);
+        }
+
+        const queue_priority: f32 = 1.0;
+
+        const queue_create_info = c.VkDeviceQueueCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueFamilyIndex = self.QueueFamilies.Graphics.?,
+            .queueCount = 1,
+            .pQueuePriorities = &queue_priority,
+        };
+
+        const device_features = c.VkPhysicalDeviceFeatures{};
+
+        // TODO: search for this prior to make sure its available
+        const device_extensions = [_][*:0]const u8{
+            "VK_KHR_portability_subset",
+            c.VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        };
+
+        const create_info = c.VkDeviceCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            .pQueueCreateInfos = &queue_create_info,
+            .queueCreateInfoCount = 1,
+            .pEnabledFeatures = &device_features,
+            // device specific extensions
+            .enabledExtensionCount = device_extensions.len,
+            .ppEnabledExtensionNames = &device_extensions,
+            // these are no longer used
+            .enabledLayerCount = 0,
+            .ppEnabledLayerNames = null,
+        };
+
+        const result = c.vkCreateDevice(self.Physical, &create_info, VkContext.Allocator, &self.Device);
+        if (result != c.VK_SUCCESS) {
+            Panic("Could not create logical device", result, .{});
+        }
+
+        self.QueryQueues();
+    }
+
+    pub fn PickPhsyicalDevice(self: *Device) void {
+        errdefer @panic("Could not pick physical devices!");
+
+        var device_count: u32 = 0;
+        _ = c.vkEnumeratePhysicalDevices(Context.Instance, &device_count, null);
+
+        if (device_count == 0) {
+            Panic("Could not find any physical devices with Vulkan support!", null, .{});
+        }
+
+        const physical_devices = try allocator.alloc(c.VkPhysicalDevice, device_count);
+        defer allocator.free(physical_devices);
+
+        const result = c.vkEnumeratePhysicalDevices(Context.Instance, &device_count, physical_devices.ptr);
+
+        if (result != c.VK_SUCCESS) {
+            Panic("Could not enumerate physical devices", result, .{});
+        }
+
+        // find the best device from our list
+        const physical_device: c.VkPhysicalDevice = blk: {
+            for (physical_devices) |device| {
+                if (IsPhysicalDeviceSuitable(device)) {
+                    break :blk device;
+                }
+            }
+            Panic("Cannot find a suitable device!", null, .{});
+        };
+
+        self.Physical = physical_device;
+    }
+
+    fn GetBestSurfaceFormat(self: Device) c.VkSurfaceFormatKHR {
+        errdefer @panic("Could not get surface formats");
+
+        var format_count: u32 = 0;
+        _ = c.vkGetPhysicalDeviceSurfaceFormatsKHR(self.Physical, Context.Surface, &format_count, null);
+
+        const formats = try allocator.alloc(c.VkSurfaceFormatKHR, format_count);
+        defer allocator.free(formats);
+
+        _ = c.vkGetPhysicalDeviceSurfaceFormatsKHR(self.Physical, Context.Surface, &format_count, formats.ptr);
+
+        for (formats) |format| {
+            if (format.format == c.VK_FORMAT_B8G8R8_SRGB) {
+                return format;
+            }
+        }
+
+        return formats[0];
+    }
+
+    pub fn Destroy(self: *Device) void {
+        self.QueueFamilies.Destroy();
+
+        if (self.Device != null) {
+            c.vkDestroyDevice(self.Device, VkContext.Allocator);
+        }
+    }
+};
+
+const TVec2i = @import("../Math.zig").TVec2i;
+
+pub fn SelectDevice(device: Device) void {
+    Context.Device = device;
+}
+
+pub fn GetDevice() Device {
+    if (Context.Device == null) {
+        Panic("No device selected!\n", null, .{});
+    }
+    return Context.Device.?;
+}
+
+pub fn CreateSwapchain(size: TVec2i) void {
+    const device = GetDevice();
+
+    var capabilities = c.VkSurfaceCapabilitiesKHR{};
+    var result = c.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device.Physical, Context.Surface, &capabilities);
+
+    if (result != c.VK_SUCCESS) {
+        Panic("Could not get device surface capabilities", result, .{});
+    }
+
+    const extent = c.VkExtent2D{
+        .width = @intCast(size.X()),
+        .height = @intCast(size.Y()),
+    };
+
+    // TODO: look more into what the best swapchain image count would be
+    var image_count = capabilities.minImageCount + 1;
+
+    if (capabilities.maxImageCount > 0 and image_count > capabilities.maxImageCount) {
+        image_count = capabilities.maxImageCount;
+    }
+
+    const surface_format = device.GetBestSurfaceFormat();
+    // TODO: query and select MAILBOX
+    const present_mode = c.VK_PRESENT_MODE_FIFO_KHR;
+
+    var create_info = c.VkSwapchainCreateInfoKHR{
+        .sType = c.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface = Context.Surface,
+        .minImageCount = image_count,
+        .imageFormat = surface_format.format,
+        .imageColorSpace = surface_format.colorSpace,
+        .imageExtent = extent,
+        .imageArrayLayers = 1,
+        .imageUsage = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .presentMode = present_mode,
+        .preTransform = capabilities.currentTransform,
+        // ignore alpha (from blending behind the window)
+        .compositeAlpha = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        .clipped = 1,
+        .oldSwapchain = null,
+    };
+
+    const indices = [_]u32{ device.QueueFamilies.Graphics.?, device.QueueFamilies.Present.? };
+
+    if (device.QueueFamilies.Graphics == device.QueueFamilies.Present) {
+        create_info.imageSharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
+        create_info.queueFamilyIndexCount = 0;
+        create_info.pQueueFamilyIndices = null;
+    } else {
+        create_info.imageSharingMode = c.VK_SHARING_MODE_CONCURRENT;
+        create_info.queueFamilyIndexCount = 2;
+        create_info.pQueueFamilyIndices = &indices;
+    }
+
+    result = c.vkCreateSwapchainKHR(device.Device, &create_info, VkContext.Allocator, &Context.Swapchain);
+    if (result != c.VK_SUCCESS) {
+        Panic("Could not create swapchain", result, .{});
+    }
+}
+
 pub fn Destroy() void {
-    c.vkDestroyInstance(Context.Instance, null);
+    if (Context.Swapchain) |swapchain| {
+        c.vkDestroySwapchainKHR(GetDevice(), swapchain, VkContext.Allocator);
+    }
+
+    c.vkDestroyDebugUtilsMessengerEXT(Context.Instance, Context.DebugMessenger, VkContext.Allocator);
+    c.vkDestroyInstance(Context.Instance, VkContext.Allocator);
 }
 
 pub fn Panic(comptime msg: []const u8, result: ?c.VkResult, args: anytype) noreturn {
     Log.ThreadSafe = false;
 
-    Log.Custom(Log.TextColor.Error, "PANIC: ", msg, args);
-    Log.Custom(Log.TextColor.Error, " => Msg: ", "{s} ({d})", .{
-        if (result) |r| VkResultStr(r) else "[None]",
-        result orelse 0,
-    });
+    Log.Custom(Log.TextColor.Error, "VKPANIC: ", msg, args);
+
+    if (result) |res| {
+        Log.Custom(Log.TextColor.Error, " => Msg: ", "{s} ({d})", .{ VkResultStr(res), res });
+    }
 
     Log.WriteChar('\n');
 
