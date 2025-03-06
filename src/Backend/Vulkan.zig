@@ -5,7 +5,10 @@ const c = @import("../CLibs.zig").c;
 
 pub const VULKAN_DEBUG = true;
 
-pub const VkContext = struct {
+const VulkanAllocator: [*c]c.VkAllocationCallbacks = null;
+
+/// A set of variables and states for Vulkan.
+pub const Context = struct {
     Instance: c.VkInstance = undefined,
     AvailableExtensions: ?[]c.VkExtensionProperties = null,
 
@@ -16,16 +19,17 @@ pub const VkContext = struct {
 
     Device: ?Device = null,
 
-    const Allocator: [*c]c.VkAllocationCallbacks = null;
-
-    pub fn Destroy(self: *VkContext) void {
+    pub fn Destroy(self: *Context) void {
         if (self.AvailableExtensions) |extensions| {
             allocator.free(extensions);
         }
     }
 };
 
-pub var Context = VkContext{};
+/// The currently selected Vulkan Renderer
+var CurrentRenderer: *Renderer = undefined;
+/// The current `Renderer`'s `Context`
+var CurrentContext: *Context = undefined;
 
 pub const RenderError = error{
     ExtensionNotAvailable,
@@ -34,103 +38,24 @@ pub const RenderError = error{
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 var allocator = gpa.allocator();
 
-fn QueryInstanceExtensions() void {
-    errdefer @panic("could not query instance extensions!");
-
-    if (Context.AvailableExtensions != null) {
-        return;
-    }
-
-    // get the count of the current extensions
-    var extension_count: u32 = 0;
-    _ = c.vkEnumerateInstanceExtensionProperties(null, &extension_count, null);
-
-    // get the available instance extensions
-    Context.AvailableExtensions = try allocator.alloc(c.VkExtensionProperties, extension_count);
-
-    _ = c.vkEnumerateInstanceExtensionProperties(null, &extension_count, Context.AvailableExtensions.?.ptr);
-
-    Log.Info("=== Available Instance Extensions ({d}) ===", .{extension_count});
-
-    for (0..extension_count) |i| {
-        const extension = Context.AvailableExtensions.?[i];
-
-        Log.Info("{s} : {d}", .{ extension.extensionName, extension.specVersion });
-    }
+/// Retrieves the currently selected Renderer
+pub fn GetCurrentRenderer() *Renderer {
+    return CurrentRenderer;
 }
 
-fn CheckExtensionsAvailable(requested: [][*:0]const u8) ?std.ArrayList([*:0]const u8) {
-    errdefer @panic("error checking extensions available");
-
-    if (Context.AvailableExtensions == null) {
-        QueryInstanceExtensions();
-    }
-
-    // we have to use dynamic here as the length is not comptime known
-    var extensions_found = try std.DynamicBitSet.initEmpty(allocator, requested.len);
-
-    for (Context.AvailableExtensions.?) |raw_extension| {
-        // loop through all of our required extensions to see if the extension matches one
-        for (requested, 0..) |raw_request, index| {
-            // convert the [256]u8 to a []u8. Convert to sentinel terminated pointer, get length, and reslice
-            const extension_length = std.mem.len(@as([*:0]u8, @ptrCast(@constCast(&raw_extension.extensionName))));
-            const extension = raw_extension.extensionName[0..extension_length];
-
-            const request = std.mem.span(raw_request);
-
-            // the extension names do not match, skip
-            if (!std.mem.eql(u8, extension, request)) {
-                continue;
-            }
-
-            extensions_found.setValue(index, true);
-            break;
-        }
-    }
-
-    Log.Info("found {d} extensions, requested {d}", .{ extensions_found.count(), requested.len });
-
-    // all extensions have been found
-    if (extensions_found.count() == requested.len) {
-        return null;
-    }
-
-    // there are extensions missing, make a list of them
-    var extensions_not_available = std.ArrayList([*:0]const u8).init(allocator);
-
-    for (0..requested.len) |index| {
-        if (!extensions_found.isSet(index)) {
-            try extensions_not_available.append(requested[index]);
-        }
-    }
-
-    // check if all extensions have been found
-    return extensions_not_available;
-}
-
-fn MakeInstanceExtensionList(requested_extensions: [][:0]const u8) std.ArrayList([*:0]const u8) {
-    errdefer @panic("could not build extension list");
-
-    var needed_extenion_count: u32 = 0;
-    const vk_needed_extensions = c.SDL_Vulkan_GetInstanceExtensions(&needed_extenion_count);
-
-    QueryInstanceExtensions();
-
-    var total_extensions = try std.ArrayList([*:0]const u8).initCapacity(allocator, requested_extensions.len + needed_extenion_count);
-
-    for (requested_extensions) |ext| {
-        try total_extensions.append(ext.ptr);
-    }
-
-    for (0..needed_extenion_count) |i| {
-        try total_extensions.append(vk_needed_extensions[i]);
-    }
-
-    return total_extensions;
-}
-
+/// Gets the handle for a function in a Vulkan extension.
+///
+/// ```
+/// // the function prototype
+/// const prot: type = *const fn (c.VkInstance, i32) void;
+/// const func = GetExtensionFunc(prot, "vkSomeFuncEXT");
+///
+/// // call the retrieved handle
+/// func(instance, 10);
+///
+/// ```
 pub fn GetExtensionFunc(comptime FuncProt: type, name: []const u8) RenderError!FuncProt {
-    const raw_ptr = c.vkGetInstanceProcAddr(Context.Instance, name.ptr);
+    const raw_ptr = c.vkGetInstanceProcAddr(CurrentContext.Instance, name.ptr);
 
     if (raw_ptr) |funcptr| {
         return @as(FuncProt, @ptrCast(funcptr));
@@ -153,6 +78,21 @@ fn CreateDebugUtilsMessengerEXT(
     };
 
     return function(instance, pCreateInfo, pAllocator, pDebugMessenger);
+}
+
+fn DestroyDebugUtilsMessengerEXT(
+    instance: c.VkInstance,
+    messenger: c.VkDebugUtilsMessengerEXT,
+    pAllocator: [*c]const c.VkAllocationCallbacks,
+) void {
+    const prot: type = *const fn (c.VkInstance, messenger: c.VkDebugUtilsMessengerEXT, pAllocator: [*c]const c.VkAllocationCallbacks) void;
+
+    const function = GetExtensionFunc(prot, "vkDestroyDebugUtilsMessengerEXT") catch {
+        Log.Warn("Debug Utils extension not present, ignoring DestroyDebugUtilsMessengerEXT...", .{});
+        return;
+    };
+
+    return function(instance, messenger, pAllocator);
 }
 
 // since this only is used in SetupDebugMessager(which is only compiled if VULKAN_DEBUG is true),
@@ -204,10 +144,10 @@ pub fn SetupDebugMessenger() void {
     };
 
     const result = CreateDebugUtilsMessengerEXT(
-        Context.Instance,
+        CurrentContext.Instance,
         &create_info,
-        VkContext.Allocator,
-        &Context.DebugMessenger,
+        VulkanAllocator,
+        &CurrentContext.DebugMessenger,
     );
 
     if (result != c.VK_SUCCESS) {
@@ -216,6 +156,7 @@ pub fn SetupDebugMessenger() void {
     }
 }
 
+/// Prints the currently available validation layers.
 fn PrintValidationLayers() void {
     errdefer @panic("Could not get validation layers (memory error)");
     var layer_count: u32 = 0;
@@ -228,88 +169,346 @@ fn PrintValidationLayers() void {
     }
 }
 
-pub fn Init() RenderError!VkContext {
-    const app_name: [:0]const u8 = "Rocket";
-    const app_info = c.VkApplicationInfo{
-        .sType = c.VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        .pApplicationName = app_name.ptr,
-        .pEngineName = app_name.ptr,
-        .apiVersion = c.VK_MAKE_VERSION(1, 3, 261),
-    };
+pub fn SetCurrentRenderer(renderer: *Renderer) void {
+    CurrentRenderer = renderer;
+    CurrentContext = &renderer.Context;
+}
 
-    var requested_extensions = [_][:0]const u8{
-        // "VK_EXT_validation_features",
-        c.VK_EXT_LAYER_SETTINGS_EXTENSION_NAME,
-    };
+pub const Renderer = struct {
+    Initialized: bool = false,
+    // NOTE: do not define Context here. Define it in an Init function;
+    // If you define it here, for some reason any of the null or undefined values
+    // do NOT get set to null, and instead take on a garbage value.
+    Context: Context = undefined,
 
-    var all_extensions = MakeInstanceExtensionList(&requested_extensions);
-    defer all_extensions.deinit();
+    const Self = @This();
 
-    if (comptime VULKAN_DEBUG) {
-        errdefer @panic("cannot add debug extensions");
-        try all_extensions.append(c.VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-        try all_extensions.append(c.VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
+    /// Create a new `Renderer` in memory and initialize it.
+    ///
+    /// Make sure to call `.Free()` after the `Renderer` is no longer used.
+    pub fn New(window: *c.SDL_Window) RenderError!*Self {
+        var renderer = allocator.create(Renderer) catch {
+            Panic("Could not allocate Renderer instance", null, .{});
+        };
+
+        try renderer.Init(window);
+
+        return renderer;
     }
-    Log.Info("Requested to load {d} extensions...", .{all_extensions.items.len});
 
-    const extensions_missing = CheckExtensionsAvailable(all_extensions.items);
+    pub fn Free(self: *Self) void {
+        self.Destroy();
 
-    if (extensions_missing) |missing| {
-        Log.SetColor(Log.TextColor.Error);
+        allocator.destroy(self);
+    }
 
-        Log.WriteRaw("MISSING: ", .{});
+    pub fn Init(self: *Self, window: *c.SDL_Window) RenderError!void {
+        if (self.Initialized) {
+            Log.Warn("Renderer has already been initialized", .{});
+            return;
+        }
 
-        for (missing.items, 0..) |ext, index| {
-            Log.WriteRaw("{s}", .{ext});
+        self.Context = Context{};
 
-            if (index < missing.items.len - 1) {
-                Log.WriteRaw(", ", .{});
+        SetCurrentRenderer(self);
+
+        try self.InitVulkan();
+
+        // retrieve our rendering surface from SDL
+        self.AttachToWindow(window);
+
+        {
+            var device = Device{};
+            device.PickPhsyicalDevice();
+            device.CreateLogicalDevice();
+
+            self.SelectDevice(device);
+        }
+
+        self.Initialized = true;
+    }
+
+    fn QueryInstanceExtensions(self: *Self) void {
+        errdefer @panic("could not query instance extensions!");
+
+        std.debug.print("Query extensions\n", .{});
+
+        if (self.Context.AvailableExtensions != null) {
+            Log.Warn("Extensions were previously queried", .{});
+            return;
+        }
+
+        // get the count of the current extensions
+        var extension_count: u32 = 0;
+        _ = c.vkEnumerateInstanceExtensionProperties(null, &extension_count, null);
+
+        std.debug.print("Ext count: {d}\n", .{extension_count});
+
+        // get the available instance extensions
+        self.Context.AvailableExtensions = try allocator.alloc(c.VkExtensionProperties, extension_count);
+
+        _ = c.vkEnumerateInstanceExtensionProperties(null, &extension_count, self.Context.AvailableExtensions.?.ptr);
+
+        Log.Info("=== Available Instance Extensions ({d}) ===", .{extension_count});
+
+        for (0..extension_count) |i| {
+            const extension = self.Context.AvailableExtensions.?[i];
+
+            Log.Info("{s} : {d}", .{ extension.extensionName, extension.specVersion });
+        }
+    }
+
+    fn MakeInstanceExtensionList(self: *Self, requested_extensions: [][:0]const u8) std.ArrayList([*:0]const u8) {
+        errdefer @panic("could not build extension list");
+
+        var needed_extenion_count: u32 = 0;
+        const vk_needed_extensions = c.SDL_Vulkan_GetInstanceExtensions(&needed_extenion_count);
+
+        self.QueryInstanceExtensions();
+
+        var total_extensions = try std.ArrayList([*:0]const u8).initCapacity(allocator, requested_extensions.len + needed_extenion_count);
+
+        for (requested_extensions) |ext| {
+            try total_extensions.append(ext.ptr);
+        }
+
+        for (0..needed_extenion_count) |i| {
+            try total_extensions.append(vk_needed_extensions[i]);
+        }
+
+        return total_extensions;
+    }
+
+    fn CheckExtensionsAvailable(self: *Self, requested: [][*:0]const u8) ?std.ArrayList([*:0]const u8) {
+        errdefer @panic("error checking extensions available");
+
+        if (self.Context.AvailableExtensions == null) {
+            self.QueryInstanceExtensions();
+        }
+
+        // we have to use dynamic here as the length is not comptime known
+        var extensions_found = try std.DynamicBitSet.initEmpty(allocator, requested.len);
+
+        for (self.Context.AvailableExtensions.?) |raw_extension| {
+            // loop through all of our required extensions to see if the extension matches one
+            for (requested, 0..) |raw_request, index| {
+                // convert the [256]u8 to a []u8. Convert to sentinel terminated pointer, get length, and reslice
+                const extension_length = std.mem.len(@as([*:0]u8, @ptrCast(@constCast(&raw_extension.extensionName))));
+                const extension = raw_extension.extensionName[0..extension_length];
+
+                const request = std.mem.span(raw_request);
+
+                // the extension names do not match, skip
+                if (!std.mem.eql(u8, extension, request)) {
+                    continue;
+                }
+
+                extensions_found.setValue(index, true);
+                break;
             }
         }
-        Log.WriteChar('\n');
 
-        Log.SetColor(Log.TextColor.Reset);
-        // free the missing extensions arraylist
-        missing.deinit();
+        Log.Info("found {d} extensions, requested {d}", .{ extensions_found.count(), requested.len });
 
-        Panic("Missing required instance extensions", null, .{});
+        // all extensions have been found
+        if (extensions_found.count() == requested.len) {
+            return null;
+        }
+
+        // there are extensions missing, make a list of them
+        var extensions_not_available = std.ArrayList([*:0]const u8).init(allocator);
+
+        for (0..requested.len) |index| {
+            if (!extensions_found.isSet(index)) {
+                try extensions_not_available.append(requested[index]);
+            }
+        }
+
+        // check if all extensions have been found
+        return extensions_not_available;
     }
 
-    PrintValidationLayers();
+    fn InitVulkan(self: *Self) RenderError!void {
+        const app_name: [:0]const u8 = "Rocket";
+        const app_info = c.VkApplicationInfo{
+            .sType = c.VK_STRUCTURE_TYPE_APPLICATION_INFO,
+            .pApplicationName = app_name.ptr,
+            .pEngineName = app_name.ptr,
+            .apiVersion = c.VK_MAKE_VERSION(1, 3, 261),
+        };
 
-    const requested_validation_layers = [_][*:0]const u8{
-        "VK_LAYER_KHRONOS_validation",
-    };
+        var requested_extensions = [_][:0]const u8{
+            c.VK_EXT_LAYER_SETTINGS_EXTENSION_NAME,
+        };
 
-    const instance_info = c.VkInstanceCreateInfo{
-        .sType = c.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pApplicationInfo = &app_info,
-        .ppEnabledExtensionNames = all_extensions.items.ptr,
-        .enabledExtensionCount = @intCast(all_extensions.items.len),
-        .ppEnabledLayerNames = &requested_validation_layers,
-        .enabledLayerCount = @intCast(requested_validation_layers.len),
-        .flags = c.VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR,
-    };
+        var all_extensions = MakeInstanceExtensionList(self, &requested_extensions);
+        defer all_extensions.deinit();
 
-    const result = c.vkCreateInstance(&instance_info, VkContext.Allocator, &Context.Instance);
+        if (comptime VULKAN_DEBUG) {
+            errdefer @panic("cannot add debug extensions");
+            try all_extensions.append(c.VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            try all_extensions.append(c.VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
+        }
+        Log.Info("Requested to load {d} extensions...", .{all_extensions.items.len});
 
-    if (result != c.VK_SUCCESS) {
-        Panic("Error creating Vulkan instance", result, .{});
+        for (all_extensions.items) |extension| {
+            Log.Info("Ext: {s}", .{extension});
+        }
+
+        const extensions_missing = self.CheckExtensionsAvailable(all_extensions.items);
+
+        if (extensions_missing) |missing| {
+            Log.SetColor(Log.TextColor.Error);
+
+            Log.WriteRaw("MISSING: ", .{});
+
+            for (missing.items, 0..) |ext, index| {
+                Log.WriteRaw("{s}", .{ext});
+
+                if (index < missing.items.len - 1) {
+                    Log.WriteRaw(", ", .{});
+                }
+            }
+            Log.WriteChar('\n');
+
+            Log.SetColor(Log.TextColor.Reset);
+            // free the missing extensions arraylist
+            missing.deinit();
+
+            Panic("Missing required instance extensions", null, .{});
+        }
+
+        PrintValidationLayers();
+
+        const requested_validation_layers = [_][*:0]const u8{
+            "VK_LAYER_KHRONOS_validation",
+        };
+
+        const instance_info = c.VkInstanceCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            .pApplicationInfo = &app_info,
+            .ppEnabledExtensionNames = all_extensions.items.ptr,
+            .enabledExtensionCount = @intCast(all_extensions.items.len),
+            .ppEnabledLayerNames = &requested_validation_layers,
+            .enabledLayerCount = @intCast(requested_validation_layers.len),
+            .flags = c.VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR,
+        };
+
+        const result = c.vkCreateInstance(&instance_info, VulkanAllocator, &self.Context.Instance);
+
+        if (result != c.VK_SUCCESS) {
+            Panic("Error creating Vulkan instance", result, .{});
+        }
+
+        SetupDebugMessenger();
     }
 
-    SetupDebugMessenger();
-
-    return Context;
-}
-
-pub fn AttachToWindow(window: *c.SDL_Window) void {
-    const success = c.SDL_Vulkan_CreateSurface(window, Context.Instance, VkContext.Allocator, &Context.Surface);
-
-    if (!success) {
-        Log.RenFatal("Could not attach Vulkan instance to window! [SDLError: {s}]\n", .{c.SDL_GetError()});
-        @panic("Renderer error");
+    pub fn SelectDevice(self: *Self, device: Device) void {
+        self.Context.Device = device;
     }
-}
+
+    pub fn GetDevice(self: Self) Device {
+        if (self.Context.Device == null) {
+            Panic("No device selected!\n", null, .{});
+        }
+        return self.Context.Device.?;
+    }
+
+    pub fn AttachToWindow(self: *Self, window: *c.SDL_Window) void {
+        const success = c.SDL_Vulkan_CreateSurface(window, self.Context.Instance, VulkanAllocator, &self.Context.Surface);
+
+        if (!success) {
+            Log.RenFatal("Could not attach Vulkan instance to window! [SDLError: {s}]\n", .{c.SDL_GetError()});
+            @panic("Renderer error");
+        }
+    }
+
+    const TVec2i = @import("../Math.zig").TVec2i;
+
+    pub fn CreateSwapchain(self: Self, size: TVec2i) void {
+        const device = self.GetDevice();
+
+        var capabilities = c.VkSurfaceCapabilitiesKHR{};
+        var result = c.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device.Physical, self.Context.Surface, &capabilities);
+
+        if (result != c.VK_SUCCESS) {
+            Panic("Could not get device surface capabilities", result, .{});
+        }
+
+        const extent = c.VkExtent2D{
+            .width = @intCast(size.X()),
+            .height = @intCast(size.Y()),
+        };
+
+        // TODO: look more into what the best swapchain image count would be
+        var image_count = capabilities.minImageCount + 1;
+
+        if (capabilities.maxImageCount > 0 and image_count > capabilities.maxImageCount) {
+            image_count = capabilities.maxImageCount;
+        }
+
+        const surface_format = device.GetBestSurfaceFormat();
+        // TODO: query and select MAILBOX
+        const present_mode = c.VK_PRESENT_MODE_FIFO_KHR;
+
+        var create_info = c.VkSwapchainCreateInfoKHR{
+            .sType = c.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+            .surface = CurrentContext.Surface,
+            .minImageCount = image_count,
+            .imageFormat = surface_format.format,
+            .imageColorSpace = surface_format.colorSpace,
+            .imageExtent = extent,
+            .imageArrayLayers = 1,
+            .imageUsage = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+            .presentMode = present_mode,
+            .preTransform = capabilities.currentTransform,
+            // ignore alpha (from blending behind the window)
+            .compositeAlpha = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+            .clipped = 1,
+            .oldSwapchain = null,
+        };
+
+        const indices = [_]u32{ device.QueueFamilies.Graphics.?, device.QueueFamilies.Present.? };
+
+        if (device.QueueFamilies.Graphics == device.QueueFamilies.Present) {
+            create_info.imageSharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
+            create_info.queueFamilyIndexCount = 0;
+            create_info.pQueueFamilyIndices = null;
+        } else {
+            create_info.imageSharingMode = c.VK_SHARING_MODE_CONCURRENT;
+            create_info.queueFamilyIndexCount = 2;
+            create_info.pQueueFamilyIndices = &indices;
+        }
+
+        result = c.vkCreateSwapchainKHR(device.Device, &create_info, VulkanAllocator, &CurrentContext.Swapchain);
+        if (result != c.VK_SUCCESS) {
+            Panic("Could not create swapchain", result, .{});
+        }
+    }
+
+    pub fn Destroy(self: *Self) void {
+        if (!self.Initialized) {
+            Log.Warn("Renderer has already been destroyed", .{});
+            return;
+        }
+
+        if (self.Context.Swapchain) |swapchain| {
+            c.vkDestroySwapchainKHR(self.GetDevice().Device, swapchain, VulkanAllocator);
+        }
+
+        if (self.Context.Surface) |surface| {
+            c.vkDestroySurfaceKHR(self.Context.Instance, surface, VulkanAllocator);
+        }
+
+        self.GetDevice().Destroy();
+
+        DestroyDebugUtilsMessengerEXT(self.Context.Instance, self.Context.DebugMessenger, VulkanAllocator);
+        c.vkDestroyInstance(self.Context.Instance, VulkanAllocator);
+        self.Context.Destroy();
+
+        self.Initialized = false;
+    }
+};
 
 pub const QueueFamilies = struct {
     RawFamilies: ?[]c.VkQueueFamilyProperties = null,
@@ -346,7 +545,12 @@ pub const QueueFamilies = struct {
 
             // check for a presentation family
             var present_support: u32 = 0;
-            const result = c.vkGetPhysicalDeviceSurfaceSupportKHR(device.Physical, @as(u32, @intCast(index)), Context.Surface, &present_support);
+            const result = c.vkGetPhysicalDeviceSurfaceSupportKHR(
+                device.Physical,
+                @as(u32, @intCast(index)),
+                CurrentContext.Surface,
+                &present_support,
+            );
             if (result != c.VK_SUCCESS) {
                 Panic("Could not get physical device surface support(presentation queue family)", result, .{});
             }
@@ -357,7 +561,7 @@ pub const QueueFamilies = struct {
         }
     }
 
-    pub fn Destroy(self: *QueueFamilies) void {
+    pub fn Destroy(self: QueueFamilies) void {
         if (self.RawFamilies != null) {
             allocator.free(self.RawFamilies.?);
         }
@@ -449,7 +653,7 @@ pub const Device = struct {
             .ppEnabledLayerNames = null,
         };
 
-        const result = c.vkCreateDevice(self.Physical, &create_info, VkContext.Allocator, &self.Device);
+        const result = c.vkCreateDevice(self.Physical, &create_info, VulkanAllocator, &self.Device);
         if (result != c.VK_SUCCESS) {
             Panic("Could not create logical device", result, .{});
         }
@@ -461,7 +665,7 @@ pub const Device = struct {
         errdefer @panic("Could not pick physical devices!");
 
         var device_count: u32 = 0;
-        _ = c.vkEnumeratePhysicalDevices(Context.Instance, &device_count, null);
+        _ = c.vkEnumeratePhysicalDevices(CurrentContext.Instance, &device_count, null);
 
         if (device_count == 0) {
             Panic("Could not find any physical devices with Vulkan support!", null, .{});
@@ -470,7 +674,7 @@ pub const Device = struct {
         const physical_devices = try allocator.alloc(c.VkPhysicalDevice, device_count);
         defer allocator.free(physical_devices);
 
-        const result = c.vkEnumeratePhysicalDevices(Context.Instance, &device_count, physical_devices.ptr);
+        const result = c.vkEnumeratePhysicalDevices(CurrentContext.Instance, &device_count, physical_devices.ptr);
 
         if (result != c.VK_SUCCESS) {
             Panic("Could not enumerate physical devices", result, .{});
@@ -492,13 +696,15 @@ pub const Device = struct {
     fn GetBestSurfaceFormat(self: Device) c.VkSurfaceFormatKHR {
         errdefer @panic("Could not get surface formats");
 
+        const surface = CurrentContext.Surface;
+
         var format_count: u32 = 0;
-        _ = c.vkGetPhysicalDeviceSurfaceFormatsKHR(self.Physical, Context.Surface, &format_count, null);
+        _ = c.vkGetPhysicalDeviceSurfaceFormatsKHR(self.Physical, surface, &format_count, null);
 
         const formats = try allocator.alloc(c.VkSurfaceFormatKHR, format_count);
         defer allocator.free(formats);
 
-        _ = c.vkGetPhysicalDeviceSurfaceFormatsKHR(self.Physical, Context.Surface, &format_count, formats.ptr);
+        _ = c.vkGetPhysicalDeviceSurfaceFormatsKHR(self.Physical, surface, &format_count, formats.ptr);
 
         for (formats) |format| {
             if (format.format == c.VK_FORMAT_B8G8R8_SRGB) {
@@ -509,97 +715,18 @@ pub const Device = struct {
         return formats[0];
     }
 
-    pub fn Destroy(self: *Device) void {
+    pub fn Destroy(self: Device) void {
         self.QueueFamilies.Destroy();
 
         if (self.Device != null) {
-            c.vkDestroyDevice(self.Device, VkContext.Allocator);
+            c.vkDestroyDevice(self.Device, VulkanAllocator);
         }
     }
 };
 
-const TVec2i = @import("../Math.zig").TVec2i;
-
-pub fn SelectDevice(device: Device) void {
-    Context.Device = device;
-}
-
-pub fn GetDevice() Device {
-    if (Context.Device == null) {
-        Panic("No device selected!\n", null, .{});
-    }
-    return Context.Device.?;
-}
-
-pub fn CreateSwapchain(size: TVec2i) void {
-    const device = GetDevice();
-
-    var capabilities = c.VkSurfaceCapabilitiesKHR{};
-    var result = c.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device.Physical, Context.Surface, &capabilities);
-
-    if (result != c.VK_SUCCESS) {
-        Panic("Could not get device surface capabilities", result, .{});
-    }
-
-    const extent = c.VkExtent2D{
-        .width = @intCast(size.X()),
-        .height = @intCast(size.Y()),
-    };
-
-    // TODO: look more into what the best swapchain image count would be
-    var image_count = capabilities.minImageCount + 1;
-
-    if (capabilities.maxImageCount > 0 and image_count > capabilities.maxImageCount) {
-        image_count = capabilities.maxImageCount;
-    }
-
-    const surface_format = device.GetBestSurfaceFormat();
-    // TODO: query and select MAILBOX
-    const present_mode = c.VK_PRESENT_MODE_FIFO_KHR;
-
-    var create_info = c.VkSwapchainCreateInfoKHR{
-        .sType = c.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-        .surface = Context.Surface,
-        .minImageCount = image_count,
-        .imageFormat = surface_format.format,
-        .imageColorSpace = surface_format.colorSpace,
-        .imageExtent = extent,
-        .imageArrayLayers = 1,
-        .imageUsage = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-        .presentMode = present_mode,
-        .preTransform = capabilities.currentTransform,
-        // ignore alpha (from blending behind the window)
-        .compositeAlpha = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .clipped = 1,
-        .oldSwapchain = null,
-    };
-
-    const indices = [_]u32{ device.QueueFamilies.Graphics.?, device.QueueFamilies.Present.? };
-
-    if (device.QueueFamilies.Graphics == device.QueueFamilies.Present) {
-        create_info.imageSharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
-        create_info.queueFamilyIndexCount = 0;
-        create_info.pQueueFamilyIndices = null;
-    } else {
-        create_info.imageSharingMode = c.VK_SHARING_MODE_CONCURRENT;
-        create_info.queueFamilyIndexCount = 2;
-        create_info.pQueueFamilyIndices = &indices;
-    }
-
-    result = c.vkCreateSwapchainKHR(device.Device, &create_info, VkContext.Allocator, &Context.Swapchain);
-    if (result != c.VK_SUCCESS) {
-        Panic("Could not create swapchain", result, .{});
-    }
-}
-
-pub fn Destroy() void {
-    if (Context.Swapchain) |swapchain| {
-        c.vkDestroySwapchainKHR(GetDevice(), swapchain, VkContext.Allocator);
-    }
-
-    c.vkDestroyDebugUtilsMessengerEXT(Context.Instance, Context.DebugMessenger, VkContext.Allocator);
-    c.vkDestroyInstance(Context.Instance, VkContext.Allocator);
-}
+//////////////////////////////////
+// Utility Functions
+//////////////////////////////////
 
 pub fn Panic(comptime msg: []const u8, result: ?c.VkResult, args: anytype) noreturn {
     Log.ThreadSafe = false;
@@ -614,10 +741,6 @@ pub fn Panic(comptime msg: []const u8, result: ?c.VkResult, args: anytype) noret
 
     @panic("Renderer panic occurred");
 }
-
-//////////////////////////////////
-// Utility Functions
-//////////////////////////////////
 
 pub fn VkResultStr(result: c.VkResult) []const u8 {
     return switch (result) {

@@ -4,7 +4,7 @@ const c = @import("CLibs.zig").c;
 const Log = @import("Log.zig");
 const Shader = @import("Shader.zig").Shader;
 
-const r = @import("Backend/Vulkan.zig");
+const VkRenderer = @import("Backend/Vulkan.zig").Renderer;
 
 const TVec2i = @import("Math/Vector.zig").TVec2i;
 
@@ -16,7 +16,7 @@ pub const Vertex = struct {
 };
 
 pub const Context = struct {
-    Window: ?*c.SDL_Window = null,
+    Window: *c.SDL_Window = undefined,
     Device: ?*c.SDL_GPUDevice = null,
 
     WindowSize: TVec2i = TVec2i{ .v = .{ 1024, 720 } },
@@ -182,7 +182,9 @@ pub const Renderer = struct {
     // }
 }{};
 
-pub const Backend = struct {
+pub var Backend = struct {
+    Renderer: *VkRenderer = undefined,
+
     const Self = @This();
 
     fn CreateWindow() void {
@@ -213,9 +215,7 @@ pub const Backend = struct {
         // c.vkEnumerateDeviceExtensionProperties(physicalDevice: VkPhysicalDevice, pLayerName: [*c]const u8, pPropertyCount: [*c]u32, pProperties: [*c]VkExtensionProperties)
     }
 
-    pub fn Init(self: Self) void {
-        _ = self;
-
+    pub fn Init(self: *Self) void {
         if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_EVENTS | c.SDL_INIT_AUDIO)) {
             Panic("Could not initialize SDL", .{});
         }
@@ -232,20 +232,11 @@ pub const Backend = struct {
 
         CreateWindow();
 
-        _ = r.Init() catch {
+        self.Renderer = VkRenderer.New(RenderContext.Window) catch {
             Panic("Could not initialize Vulkan renderer", .{});
         };
 
-        r.AttachToWindow(RenderContext.Window.?);
-
-        // create our renderer device
-        {
-            var device = r.Device{};
-            device.CreateLogicalDevice();
-            r.SelectDevice(device);
-        }
-
-        r.CreateSwapchain(RenderContext.WindowSize);
+        self.Renderer.CreateSwapchain(RenderContext.WindowSize);
 
         // if (!c.SDL_ClaimWindowForGPUDevice(RenderContext.Device, RenderContext.Window)) {
         //     Panic("Could not claim window for graphics device!", .{});
@@ -253,9 +244,7 @@ pub const Backend = struct {
     }
 
     pub fn Destroy(self: Self) void {
-        _ = self;
-
-        r.Context.Destroy();
+        self.Renderer.Free();
 
         // c.SDL_ReleaseGPUTexture(RenderContext.Device, RenderContext.DepthTexture);
 
