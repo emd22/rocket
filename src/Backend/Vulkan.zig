@@ -47,14 +47,14 @@ pub fn GetCurrentRenderer() *Renderer {
 ///
 /// ```
 /// // the function prototype
-/// const prot: type = *const fn (c.VkInstance, i32) void;
+/// const prot: type = *const fn (c.VkInstance, i32) callconv(.c) void;
 /// const func = GetExtensionFunc(prot, "vkSomeFuncEXT");
 ///
 /// // call the retrieved handle
 /// func(instance, 10);
 ///
 /// ```
-pub fn GetExtensionFunc(comptime FuncProt: type, name: []const u8) RenderError!FuncProt {
+pub inline fn GetExtensionFunc(comptime FuncProt: type, name: []const u8) RenderError!FuncProt {
     const raw_ptr = c.vkGetInstanceProcAddr(CurrentContext.Instance, name.ptr);
 
     if (raw_ptr) |funcptr| {
@@ -70,8 +70,8 @@ fn CreateDebugUtilsMessengerEXT(
     pCreateInfo: [*c]const c.VkDebugUtilsMessengerCreateInfoEXT,
     pAllocator: [*c]const c.VkAllocationCallbacks,
     pDebugMessenger: [*c]c.VkDebugUtilsMessengerEXT,
-) c.VkResult {
-    const prot: type = *const fn (c.VkInstance, [*c]const c.VkDebugUtilsMessengerCreateInfoEXT, [*c]const c.VkAllocationCallbacks, [*c]c.VkDebugUtilsMessengerEXT) c.VkResult;
+) callconv(.c) c.VkResult {
+    const prot: type = *const fn (c.VkInstance, [*c]const c.VkDebugUtilsMessengerCreateInfoEXT, [*c]const c.VkAllocationCallbacks, [*c]c.VkDebugUtilsMessengerEXT) callconv(.c) c.VkResult;
 
     const function = GetExtensionFunc(prot, "vkCreateDebugUtilsMessengerEXT") catch {
         return c.VK_ERROR_EXTENSION_NOT_PRESENT;
@@ -84,8 +84,8 @@ fn DestroyDebugUtilsMessengerEXT(
     instance: c.VkInstance,
     messenger: c.VkDebugUtilsMessengerEXT,
     pAllocator: [*c]const c.VkAllocationCallbacks,
-) void {
-    const prot: type = *const fn (c.VkInstance, messenger: c.VkDebugUtilsMessengerEXT, pAllocator: [*c]const c.VkAllocationCallbacks) void;
+) callconv(.c) void {
+    const prot: type = *const fn (c.VkInstance, messenger: c.VkDebugUtilsMessengerEXT, pAllocator: [*c]const c.VkAllocationCallbacks) callconv(.c) void;
 
     const function = GetExtensionFunc(prot, "vkDestroyDebugUtilsMessengerEXT") catch {
         Log.Warn("Debug Utils extension not present, ignoring DestroyDebugUtilsMessengerEXT...", .{});
@@ -124,7 +124,11 @@ fn DebugMessageCallback(
     return 0;
 }
 
-pub fn SetupDebugMessenger() void {
+pub const Swapchain = struct {
+    Swapchain: ?*c.VkSwapchainKHR = null,
+};
+
+pub fn SetupDebugMessenger() callconv(.c) void {
     if (comptime VULKAN_DEBUG == false) {
         return;
     }
@@ -400,6 +404,8 @@ pub const Renderer = struct {
             Panic("Error creating Vulkan instance", result, .{});
         }
 
+        Log.RenInfo("Successfully created instance!", .{});
+
         SetupDebugMessenger();
     }
 
@@ -502,7 +508,10 @@ pub const Renderer = struct {
 
         self.GetDevice().Destroy();
 
-        DestroyDebugUtilsMessengerEXT(self.Context.Instance, self.Context.DebugMessenger, VulkanAllocator);
+        if (self.Context.DebugMessenger != null) {
+            DestroyDebugUtilsMessengerEXT(self.Context.Instance, self.Context.DebugMessenger, VulkanAllocator);
+        }
+
         c.vkDestroyInstance(self.Context.Instance, VulkanAllocator);
         self.Context.Destroy();
 
@@ -545,16 +554,20 @@ pub const QueueFamilies = struct {
 
             // check for a presentation family
             var present_support: u32 = 0;
+
             const result = c.vkGetPhysicalDeviceSurfaceSupportKHR(
                 device.Physical,
                 @as(u32, @intCast(index)),
                 CurrentContext.Surface,
                 &present_support,
             );
+
             if (result != c.VK_SUCCESS) {
                 Panic("Could not get physical device surface support(presentation queue family)", result, .{});
             }
+
             Log.Info("Present support: {d}", .{present_support});
+
             if (present_support > 0) {
                 self.Present = @as(u32, @intCast(index));
             }

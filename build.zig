@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{
-        .preferred_optimize_mode = .ReleaseSmall,
+        .preferred_optimize_mode = .Debug,
     });
 
     const lib = b.addStaticLibrary(.{
@@ -43,7 +43,7 @@ pub fn build(b: *std.Build) void {
     const sdl_dep = b.dependency("sdl", .{ .target = target, .optimize = optimize });
 
     const sdl_lib = sdl_dep.artifact("SDL3");
-    sdl_lib.defineCMacro("SDL_ASSERT_LEVEL", "2");
+    // sdl_lib.defineCMacro("SDL_ASSERT_LEVEL", "2");
     exe.root_module.linkLibrary(sdl_lib);
 
     exe.linkSystemLibrary("vulkan");

@@ -42,8 +42,8 @@ pub fn Vec4Swizzle(
 
 /// The base struct for creating vector types
 pub fn TVec(comptime T: type) type {
-    const ElementType = @typeInfo(T).Vector.child;
-    const TLen = @typeInfo(T).Vector.len;
+    const ElementType = @typeInfo(T).vector.child;
+    const TLen = @typeInfo(T).vector.len;
 
     return struct {
         const Self = @This();
