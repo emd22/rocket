@@ -1,6 +1,8 @@
 const c = @import("CLibs.zig").c;
 
-const RenderContext = @import("Renderer.zig").Context;
+const Renderer = @import("Renderer.zig");
+
+const v = @import("Backend/Vulkan.zig");
 
 const std = @import("std");
 
@@ -21,19 +23,19 @@ const ShaderLoadOptions = struct {
 //         },
 //     }
 // }
+//
+// fn ShaderGetEntrypoint(fmt: c.SDL_GPUShaderFormat) ?[]const u8 {
+//     // std.debug.print("shader format: {d}\n", .{fmt});
+//     if ((fmt & c.SDL_GPU_SHADERFORMAT_MSL) != 0) {
+//         return "main0";
+//     }
 
-fn ShaderGetEntrypoint(fmt: c.SDL_GPUShaderFormat) ?[]const u8 {
-    // std.debug.print("shader format: {d}\n", .{fmt});
-    if ((fmt & c.SDL_GPU_SHADERFORMAT_MSL) != 0) {
-        return "main0";
-    }
+//     if ((fmt & c.SDL_GPU_SHADERFORMAT_DXIL) != 0 or (fmt & c.SDL_GPU_SHADERFORMAT_SPIRV) != 0) {
+//         return "main";
+//     }
 
-    if ((fmt & c.SDL_GPU_SHADERFORMAT_DXIL) != 0 or (fmt & c.SDL_GPU_SHADERFORMAT_SPIRV) != 0) {
-        return "main";
-    }
-
-    @panic("No GPU shadertype found");
-}
+//     @panic("No GPU shadertype found");
+// }
 
 inline fn GetFileExtension(filename: []const u8) []u8 {
     return std.mem.splitBackwardsSequence(u8, filename, ".").next();
@@ -46,7 +48,8 @@ const MAXIMUM_FILE_LENGTH = 1 * 1024 * 1024 * 1024;
 const Log = @import("Log.zig");
 
 pub const Shader = struct {
-    Shader: *c.SDL_GPUShader = undefined,
+    // Shader: *c.SDL_GPUShader = undefined,
+    Shader: c.VkShaderModule = null,
     Initialized: bool = false,
 
     pub const Type = enum {
@@ -54,14 +57,14 @@ pub const Shader = struct {
         Fragment,
     };
 
-    pub fn FromFile(context: *RenderContext, shader_type: Type, filename: []const u8, options: ShaderLoadOptions) !Shader {
+    pub fn FromFile(renderer: *Renderer, shader_type: Type, filename: []const u8, options: ShaderLoadOptions) !Shader {
         var shader: Shader = Shader{};
-        try shader.Load(context, shader_type, filename, options);
+        try shader.Load(renderer, shader_type, filename, options);
 
         return shader;
     }
 
-    pub fn Load(self: *Shader, context: *RenderContext, shader_type: Type, filename: []const u8, options: ShaderLoadOptions) !void {
+    pub fn Load(self: *Shader, shader_type: Type, filename: []const u8, options: ShaderLoadOptions) !void {
         errdefer Log.Error("Error loading shader '{s}'", .{filename});
 
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -69,7 +72,6 @@ pub const Shader = struct {
 
         const allocator = gpa.allocator();
 
-        _ = context;
         _ = shader_type;
         _ = options;
 
@@ -86,6 +88,8 @@ pub const Shader = struct {
         const buffer = try file.readToEndAlloc(allocator, MAXIMUM_FILE_LENGTH);
 
         file.close();
+
+        self.Shader = v.CreateShaderModule(buffer);
 
         // const shader_info: c.SDL_GPUShaderCreateInfo = .{
         //     .code = buffer.ptr,
@@ -110,13 +114,13 @@ pub const Shader = struct {
         self.Initialized = true;
     }
 
-    pub fn Destroy(self: *Shader, context: *RenderContext) void {
+    pub fn Destroy(self: *Shader) void {
         if (!self.Initialized) {
             Log.Warn("cannot destroy shader: shader has already been released", .{});
             return;
         }
 
-        _ = context;
+        v.DestroyShaderModule(self.Shader);
 
         // c.SDL_ReleaseGPUShader(context.Device, self.Shader);
         self.Initialized = false;

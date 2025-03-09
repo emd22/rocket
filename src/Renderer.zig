@@ -4,7 +4,8 @@ const c = @import("CLibs.zig").c;
 const Log = @import("Log.zig");
 const Shader = @import("Shader.zig").Shader;
 
-const VkRenderer = @import("Backend/Vulkan.zig").Renderer;
+const v = @import("Backend/Vulkan.zig");
+const VkRenderer = v.Renderer;
 
 const TVec2i = @import("Math/Vector.zig").TVec2i;
 
@@ -15,7 +16,9 @@ pub const Vertex = struct {
     Normal: @Vector(3, f32) = @splat(0),
 };
 
-pub const Context = struct {
+pub const Renderer = struct {
+    Pipeline: ?*c.SDL_GPUGraphicsPipeline = null,
+
     Window: *c.SDL_Window = undefined,
     Device: ?*c.SDL_GPUDevice = null,
 
@@ -25,27 +28,49 @@ pub const Context = struct {
     VSync: bool = true,
 
     DepthTexture: ?*c.SDL_GPUTexture = null,
-};
 
-pub var RenderContext = Context{};
-
-pub fn GetRenderContext() *Context {
-    return &RenderContext;
-}
-
-pub const Renderer = struct {
-    Pipeline: ?*c.SDL_GPUGraphicsPipeline = null,
-    Shaders: struct {
-        Vertex: Shader = Shader{},
-        Fragment: Shader = Shader{},
-    } = .{},
+    Renderer: *VkRenderer = undefined,
 
     const Self = @This();
 
     pub fn Init(self: *Self) void {
-        Backend.Init();
+        if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_EVENTS | c.SDL_INIT_AUDIO)) {
+            Panic("Could not initialize SDL", .{});
+        }
 
-        self.LoadShaders();
+        // RenderContext.Device = c.SDL_CreateGPUDevice(
+        //     c.SDL_GPU_SHADERFORMAT_SPIRV | c.SDL_GPU_SHADERFORMAT_MSL | c.SDL_GPU_SHADERFORMAT_DXIL,
+        //     RenderContext.DebugMode,
+        //     "vulkan", // choose the optimal driver
+        // ) orelse {
+        //     Panic("Could not create GPU device", .{});
+        // };
+
+        // std.debug.print("driver: {s}\n", .{c.SDL_GetGPUDriver(0)});
+
+        self.CreateWindow();
+
+        self.Renderer = VkRenderer.New(self.Window, self.WindowSize) catch {
+            Panic("Could not initialize Vulkan renderer", .{});
+        };
+
+        var shaders = struct {
+            Vertex: Shader = Shader{},
+            Fragment: Shader = Shader{},
+        }{};
+
+        {
+            errdefer Panic("Could not load shaders!", .{});
+
+            try shaders.Vertex.Load(Shader.Type.Vertex, "./shaders/triangle.vert.spv", .{ .UniformBuffers = 1 });
+            try shaders.Fragment.Load(Shader.Type.Fragment, "./shaders/main.frag.spv", .{});
+        }
+
+        var pipeline = v.GraphicsPipeline{};
+        pipeline.Create(.{
+            .Vertex = shaders.Vertex.Shader,
+            .Fragment = shaders.Fragment.Shader,
+        });
 
         // const swapchain_success = c.SDL_SetGPUSwapchainParameters(
         //     RenderContext.Device,
@@ -65,8 +90,10 @@ pub const Renderer = struct {
 
         // our shaders are now loaded into the graphics pipeline, release them from main memory.
 
-        self.Shaders.Vertex.Destroy(&RenderContext);
-        self.Shaders.Fragment.Destroy(&RenderContext);
+        {
+            shaders.Vertex.Destroy();
+            shaders.Fragment.Destroy();
+        }
 
         // RenderContext.DepthTexture = c.SDL_CreateGPUTexture(
         //     RenderContext.Device,
@@ -83,31 +110,50 @@ pub const Renderer = struct {
         // );
     }
 
+    fn CreateWindow(self: *Self) void {
+        const window_flags: c.SDL_WindowFlags = c.SDL_WINDOW_VULKAN;
+
+        // const driver_str_c = c.SDL_GetGPUDriver(1);
+        // const driver_str = std.mem.span(driver_str_c);
+
+        // if (std.mem.eql(u8, driver_str, "vulkan")) {
+        //     window_flags |= c.SDL_WINDOW_VULKAN;
+        // } else if (std.mem.eql(u8, driver_str, "metal")) {
+        //     window_flags |= c.SDL_WINDOW_METAL;
+        // } else if (std.mem.eql(u8, driver_str, "direct3d12")) {
+        //     // no window flag for dx12?
+        // } else {
+        //     Panic("No supported rendering backend available", .{});
+        // }
+
+        self.Window = c.SDL_CreateWindow(
+            "Rocket",
+            1024,
+            720,
+            window_flags,
+        ) orelse {
+            Panic("Could not create window", .{});
+        };
+
+        // c.vkEnumerateDeviceExtensionProperties(physicalDevice: VkPhysicalDevice, pLayerName: [*c]const u8, pPropertyCount: [*c]u32, pProperties: [*c]VkExtensionProperties)
+    }
+
     pub fn Destroy(self: *Self) void {
         if (self.Pipeline != null) {
             // c.SDL_ReleaseGPUGraphicsPipeline(RenderContext.Device, self.Pipeline);
             self.Pipeline = null;
         }
 
-        Backend.Destroy();
-    }
+        self.Renderer.Free();
 
-    fn LoadShaders(self: *Self) void {
-        errdefer |err| Panic("Cannot load main shaders! E: {}", .{err});
+        // c.SDL_ReleaseGPUTexture(RenderContext.Device, RenderContext.DepthTexture);
 
-        try self.Shaders.Vertex.Load(
-            &RenderContext,
-            Shader.Type.Vertex,
-            "./shaders/triangle.vert.msl",
-            .{ .UniformBuffers = 1 },
-        );
+        // c.SDL_ReleaseWindowFromGPUDevice(RenderContext.Device, RenderContext.Window);
 
-        try self.Shaders.Fragment.Load(
-            &RenderContext,
-            Shader.Type.Fragment,
-            "./shaders/main.frag.msl",
-            .{},
-        );
+        c.SDL_DestroyWindow(self.Window);
+        // c.SDL_DestroyGPUDevice(RenderContext.Device);
+
+        c.SDL_Quit();
     }
 
     // fn CreateMainPipeline(vertex_shader: *Shader, fragment_shader: *Shader) *c.SDL_GPUGraphicsPipeline {
@@ -180,81 +226,6 @@ pub const Renderer = struct {
     //         Panic("Failed to create render pipeline!", .{});
     //     };
     // }
-}{};
-
-pub var Backend = struct {
-    Renderer: *VkRenderer = undefined,
-
-    const Self = @This();
-
-    fn CreateWindow() void {
-        const window_flags: c.SDL_WindowFlags = c.SDL_WINDOW_VULKAN;
-
-        // const driver_str_c = c.SDL_GetGPUDriver(1);
-        // const driver_str = std.mem.span(driver_str_c);
-
-        // if (std.mem.eql(u8, driver_str, "vulkan")) {
-        //     window_flags |= c.SDL_WINDOW_VULKAN;
-        // } else if (std.mem.eql(u8, driver_str, "metal")) {
-        //     window_flags |= c.SDL_WINDOW_METAL;
-        // } else if (std.mem.eql(u8, driver_str, "direct3d12")) {
-        //     // no window flag for dx12?
-        // } else {
-        //     Panic("No supported rendering backend available", .{});
-        // }
-
-        RenderContext.Window = c.SDL_CreateWindow(
-            "Rocket",
-            1024,
-            720,
-            window_flags,
-        ) orelse {
-            Panic("Could not create window", .{});
-        };
-
-        // c.vkEnumerateDeviceExtensionProperties(physicalDevice: VkPhysicalDevice, pLayerName: [*c]const u8, pPropertyCount: [*c]u32, pProperties: [*c]VkExtensionProperties)
-    }
-
-    pub fn Init(self: *Self) void {
-        if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_EVENTS | c.SDL_INIT_AUDIO)) {
-            Panic("Could not initialize SDL", .{});
-        }
-
-        // RenderContext.Device = c.SDL_CreateGPUDevice(
-        //     c.SDL_GPU_SHADERFORMAT_SPIRV | c.SDL_GPU_SHADERFORMAT_MSL | c.SDL_GPU_SHADERFORMAT_DXIL,
-        //     RenderContext.DebugMode,
-        //     "vulkan", // choose the optimal driver
-        // ) orelse {
-        //     Panic("Could not create GPU device", .{});
-        // };
-
-        // std.debug.print("driver: {s}\n", .{c.SDL_GetGPUDriver(0)});
-
-        CreateWindow();
-
-        self.Renderer = VkRenderer.New(RenderContext.Window) catch {
-            Panic("Could not initialize Vulkan renderer", .{});
-        };
-
-        self.Renderer.CreateSwapchain(RenderContext.WindowSize);
-
-        // if (!c.SDL_ClaimWindowForGPUDevice(RenderContext.Device, RenderContext.Window)) {
-        //     Panic("Could not claim window for graphics device!", .{});
-        // }
-    }
-
-    pub fn Destroy(self: Self) void {
-        self.Renderer.Free();
-
-        // c.SDL_ReleaseGPUTexture(RenderContext.Device, RenderContext.DepthTexture);
-
-        // c.SDL_ReleaseWindowFromGPUDevice(RenderContext.Device, RenderContext.Window);
-
-        c.SDL_DestroyWindow(RenderContext.Window);
-        // c.SDL_DestroyGPUDevice(RenderContext.Device);
-
-        c.SDL_Quit();
-    }
 }{};
 
 pub fn Panic(comptime msg: []const u8, args: anytype) noreturn {

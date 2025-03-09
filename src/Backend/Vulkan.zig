@@ -7,29 +7,8 @@ pub const VULKAN_DEBUG = true;
 
 const VulkanAllocator: [*c]c.VkAllocationCallbacks = null;
 
-/// A set of variables and states for Vulkan.
-pub const Context = struct {
-    Instance: c.VkInstance = undefined,
-    AvailableExtensions: ?[]c.VkExtensionProperties = null,
-
-    DebugMessenger: c.VkDebugUtilsMessengerEXT = undefined,
-
-    Surface: c.VkSurfaceKHR = null,
-    Swapchain: c.VkSwapchainKHR = null,
-
-    Device: ?Device = null,
-
-    pub fn Destroy(self: *Context) void {
-        if (self.AvailableExtensions) |extensions| {
-            allocator.free(extensions);
-        }
-    }
-};
-
 /// The currently selected Vulkan Renderer
 var CurrentRenderer: *Renderer = undefined;
-/// The current `Renderer`'s `Context`
-var CurrentContext: *Context = undefined;
 
 pub const RenderError = error{
     ExtensionNotAvailable,
@@ -41,6 +20,10 @@ var allocator = gpa.allocator();
 /// Retrieves the currently selected Renderer
 pub fn GetCurrentRenderer() *Renderer {
     return CurrentRenderer;
+}
+
+pub fn SetCurrentRenderer(renderer: *Renderer) void {
+    CurrentRenderer = renderer;
 }
 
 /// Gets the handle for a function in a Vulkan extension.
@@ -55,7 +38,7 @@ pub fn GetCurrentRenderer() *Renderer {
 ///
 /// ```
 pub inline fn GetExtensionFunc(comptime FuncProt: type, name: []const u8) RenderError!FuncProt {
-    const raw_ptr = c.vkGetInstanceProcAddr(CurrentContext.Instance, name.ptr);
+    const raw_ptr = c.vkGetInstanceProcAddr(CurrentRenderer.Instance, name.ptr);
 
     if (raw_ptr) |funcptr| {
         return @as(FuncProt, @ptrCast(funcptr));
@@ -124,8 +107,133 @@ fn DebugMessageCallback(
     return 0;
 }
 
+const TVec2i = @import("../Math.zig").TVec2i;
+
 pub const Swapchain = struct {
-    Swapchain: ?*c.VkSwapchainKHR = null,
+    Swapchain: c.VkSwapchainKHR = null,
+    ImageViews: []c.VkImageView = undefined,
+    Images: []c.VkImage = undefined,
+
+    ImageFormat: c.VkSurfaceFormatKHR = undefined,
+
+    const Self = @This();
+
+    fn CreateImageViews(self: *Self) void {
+        self.ImageViews = allocator.alloc(c.VkImageView, self.Images.len);
+
+        for (self.Images, 0..) |image, index| {
+            const create_info = c.VkImageViewCreateInfo{
+                .sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image = image,
+                .viewType = c.VK_IMAGE_VIEW_TYPE_2D,
+                .format = self.ImageFormat,
+                .components = @splat(c.VK_COMPONENT_SWIZZLE_IDENTITY),
+                .subresourceRange = .{
+                    .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+            };
+
+            const result = c.vkCreateImageView(CurrentRenderer.GetDevice(), &create_info, null, &self.ImageViews[index]);
+            if (result != c.VK_SUCCESS) {
+                Panic("Could not create swapchain image view", result, .{});
+            }
+        }
+    }
+
+    pub fn Destroy(self: *Self) void {
+        const device = CurrentRenderer.GetDevice().Device;
+
+        for (self.ImageViews) |view| {
+            c.vkDestroyImageView(device, view, VulkanAllocator);
+        }
+
+        allocator.free(self.ImageViews);
+        allocator.free(self.Images);
+        c.vkDestroySwapchainKHR(device, self.Swapchain, VulkanAllocator);
+    }
+
+    pub fn Create(self: *Self, size: TVec2i) void {
+        self.CreateSwapchain(size);
+        self.CreateSwapchainImages();
+    }
+
+    fn CreateSwapchainImages(self: *Self) void {
+        var image_count: u32 = 0;
+
+        const device = CurrentRenderer.GetDevice();
+
+        _ = c.vkGetSwapchainImagesKHR(device.Device, self.Swapchain, &image_count, null);
+
+        self.Images = allocator.alloc(c.VkImage, image_count) catch Panic("Could not create swapchain images", null, .{});
+
+        _ = c.vkGetSwapchainImagesKHR(device.Device, self.Swapchain, &image_count, self.Images.ptr);
+    }
+
+    fn CreateSwapchain(self: *Self, size: TVec2i) void {
+        const device = CurrentRenderer.GetDevice();
+
+        var capabilities = c.VkSurfaceCapabilitiesKHR{};
+        var result = c.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device.Physical, CurrentRenderer.Surface, &capabilities);
+
+        if (result != c.VK_SUCCESS) {
+            Panic("Could not get device surface capabilities", result, .{});
+        }
+
+        const extent = c.VkExtent2D{
+            .width = @intCast(size.X()),
+            .height = @intCast(size.Y()),
+        };
+
+        // TODO: look more into what the best swapchain image count would be
+        var image_count = capabilities.minImageCount + 1;
+
+        if (capabilities.maxImageCount > 0 and image_count > capabilities.maxImageCount) {
+            image_count = capabilities.maxImageCount;
+        }
+
+        self.ImageFormat = device.GetBestSurfaceFormat();
+
+        // TODO: query and select MAILBOX
+        const present_mode = c.VK_PRESENT_MODE_FIFO_KHR;
+
+        var create_info = c.VkSwapchainCreateInfoKHR{
+            .sType = c.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+            .surface = CurrentRenderer.Surface,
+            .minImageCount = image_count,
+            .imageFormat = self.ImageFormat.format,
+            .imageColorSpace = self.ImageFormat.colorSpace,
+            .imageExtent = extent,
+            .imageArrayLayers = 1,
+            .imageUsage = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+            .presentMode = present_mode,
+            .preTransform = capabilities.currentTransform,
+            // ignore alpha (from blending behind the window)
+            .compositeAlpha = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+            .clipped = 1,
+            .oldSwapchain = null,
+        };
+
+        const indices = [_]u32{ device.QueueFamilies.Graphics.?, device.QueueFamilies.Present.? };
+
+        if (device.QueueFamilies.Graphics == device.QueueFamilies.Present) {
+            create_info.imageSharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
+            create_info.queueFamilyIndexCount = 0;
+            create_info.pQueueFamilyIndices = null;
+        } else {
+            create_info.imageSharingMode = c.VK_SHARING_MODE_CONCURRENT;
+            create_info.queueFamilyIndexCount = 2;
+            create_info.pQueueFamilyIndices = &indices;
+        }
+
+        result = c.vkCreateSwapchainKHR(device.Device, &create_info, VulkanAllocator, &self.Swapchain);
+        if (result != c.VK_SUCCESS) {
+            Panic("Could not create swapchain", result, .{});
+        }
+    }
 };
 
 pub fn SetupDebugMessenger() callconv(.c) void {
@@ -148,10 +256,10 @@ pub fn SetupDebugMessenger() callconv(.c) void {
     };
 
     const result = CreateDebugUtilsMessengerEXT(
-        CurrentContext.Instance,
+        CurrentRenderer.Instance,
         &create_info,
         VulkanAllocator,
-        &CurrentContext.DebugMessenger,
+        &CurrentRenderer.DebugMessenger,
     );
 
     if (result != c.VK_SUCCESS) {
@@ -173,29 +281,38 @@ fn PrintValidationLayers() void {
     }
 }
 
-pub fn SetCurrentRenderer(renderer: *Renderer) void {
-    CurrentRenderer = renderer;
-    CurrentContext = &renderer.Context;
-}
-
 pub const Renderer = struct {
     Initialized: bool = false,
-    // NOTE: do not define Context here. Define it in an Init function;
-    // If you define it here, for some reason any of the null or undefined values
-    // do NOT get set to null, and instead take on a garbage value.
-    Context: Context = undefined,
+
+    Instance: c.VkInstance = undefined,
+    AvailableExtensions: ?[]c.VkExtensionProperties = null,
+
+    DebugMessenger: c.VkDebugUtilsMessengerEXT = undefined,
+
+    Surface: c.VkSurfaceKHR = null,
+    Swapchain: Swapchain = Swapchain{},
+
+    Device: ?Device = null,
 
     const Self = @This();
+
+    pub fn GetDevice(self: Self) Device {
+        if (self.Device == null) {
+            Panic("No device selected!\n", null, .{});
+        }
+        return self.Device.?;
+    }
 
     /// Create a new `Renderer` in memory and initialize it.
     ///
     /// Make sure to call `.Free()` after the `Renderer` is no longer used.
-    pub fn New(window: *c.SDL_Window) RenderError!*Self {
+    pub fn New(window: *c.SDL_Window, window_size: TVec2i) RenderError!*Self {
         var renderer = allocator.create(Renderer) catch {
             Panic("Could not allocate Renderer instance", null, .{});
         };
+        renderer.* = std.mem.zeroes(Renderer);
 
-        try renderer.Init(window);
+        try renderer.Init(window, window_size);
 
         return renderer;
     }
@@ -206,13 +323,11 @@ pub const Renderer = struct {
         allocator.destroy(self);
     }
 
-    pub fn Init(self: *Self, window: *c.SDL_Window) RenderError!void {
+    pub fn Init(self: *Self, window: *c.SDL_Window, window_size: TVec2i) RenderError!void {
         if (self.Initialized) {
             Log.Warn("Renderer has already been initialized", .{});
             return;
         }
-
-        self.Context = Context{};
 
         SetCurrentRenderer(self);
 
@@ -229,15 +344,17 @@ pub const Renderer = struct {
             self.SelectDevice(device);
         }
 
+        self.Swapchain.Create(window_size);
+
         self.Initialized = true;
     }
 
     fn QueryInstanceExtensions(self: *Self) void {
-        errdefer @panic("could not query instance extensions!");
+        errdefer @panic("Could not query instance extensions!");
 
         std.debug.print("Query extensions\n", .{});
 
-        if (self.Context.AvailableExtensions != null) {
+        if (self.AvailableExtensions != null) {
             Log.Warn("Extensions were previously queried", .{});
             return;
         }
@@ -249,14 +366,14 @@ pub const Renderer = struct {
         std.debug.print("Ext count: {d}\n", .{extension_count});
 
         // get the available instance extensions
-        self.Context.AvailableExtensions = try allocator.alloc(c.VkExtensionProperties, extension_count);
+        self.AvailableExtensions = try allocator.alloc(c.VkExtensionProperties, extension_count);
 
-        _ = c.vkEnumerateInstanceExtensionProperties(null, &extension_count, self.Context.AvailableExtensions.?.ptr);
+        _ = c.vkEnumerateInstanceExtensionProperties(null, &extension_count, self.AvailableExtensions.?.ptr);
 
         Log.Info("=== Available Instance Extensions ({d}) ===", .{extension_count});
 
         for (0..extension_count) |i| {
-            const extension = self.Context.AvailableExtensions.?[i];
+            const extension = self.AvailableExtensions.?[i];
 
             Log.Info("{s} : {d}", .{ extension.extensionName, extension.specVersion });
         }
@@ -286,14 +403,14 @@ pub const Renderer = struct {
     fn CheckExtensionsAvailable(self: *Self, requested: [][*:0]const u8) ?std.ArrayList([*:0]const u8) {
         errdefer @panic("error checking extensions available");
 
-        if (self.Context.AvailableExtensions == null) {
+        if (self.AvailableExtensions == null) {
             self.QueryInstanceExtensions();
         }
 
         // we have to use dynamic here as the length is not comptime known
         var extensions_found = try std.DynamicBitSet.initEmpty(allocator, requested.len);
 
-        for (self.Context.AvailableExtensions.?) |raw_extension| {
+        for (self.AvailableExtensions.?) |raw_extension| {
             // loop through all of our required extensions to see if the extension matches one
             for (requested, 0..) |raw_request, index| {
                 // convert the [256]u8 to a []u8. Convert to sentinel terminated pointer, get length, and reslice
@@ -398,7 +515,7 @@ pub const Renderer = struct {
             .flags = c.VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR,
         };
 
-        const result = c.vkCreateInstance(&instance_info, VulkanAllocator, &self.Context.Instance);
+        const result = c.vkCreateInstance(&instance_info, VulkanAllocator, &self.Instance);
 
         if (result != c.VK_SUCCESS) {
             Panic("Error creating Vulkan instance", result, .{});
@@ -410,85 +527,15 @@ pub const Renderer = struct {
     }
 
     pub fn SelectDevice(self: *Self, device: Device) void {
-        self.Context.Device = device;
-    }
-
-    pub fn GetDevice(self: Self) Device {
-        if (self.Context.Device == null) {
-            Panic("No device selected!\n", null, .{});
-        }
-        return self.Context.Device.?;
+        self.Device = device;
     }
 
     pub fn AttachToWindow(self: *Self, window: *c.SDL_Window) void {
-        const success = c.SDL_Vulkan_CreateSurface(window, self.Context.Instance, VulkanAllocator, &self.Context.Surface);
+        const success = c.SDL_Vulkan_CreateSurface(window, self.Instance, VulkanAllocator, &self.Surface);
 
         if (!success) {
             Log.RenFatal("Could not attach Vulkan instance to window! [SDLError: {s}]\n", .{c.SDL_GetError()});
             @panic("Renderer error");
-        }
-    }
-
-    const TVec2i = @import("../Math.zig").TVec2i;
-
-    pub fn CreateSwapchain(self: Self, size: TVec2i) void {
-        const device = self.GetDevice();
-
-        var capabilities = c.VkSurfaceCapabilitiesKHR{};
-        var result = c.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device.Physical, self.Context.Surface, &capabilities);
-
-        if (result != c.VK_SUCCESS) {
-            Panic("Could not get device surface capabilities", result, .{});
-        }
-
-        const extent = c.VkExtent2D{
-            .width = @intCast(size.X()),
-            .height = @intCast(size.Y()),
-        };
-
-        // TODO: look more into what the best swapchain image count would be
-        var image_count = capabilities.minImageCount + 1;
-
-        if (capabilities.maxImageCount > 0 and image_count > capabilities.maxImageCount) {
-            image_count = capabilities.maxImageCount;
-        }
-
-        const surface_format = device.GetBestSurfaceFormat();
-        // TODO: query and select MAILBOX
-        const present_mode = c.VK_PRESENT_MODE_FIFO_KHR;
-
-        var create_info = c.VkSwapchainCreateInfoKHR{
-            .sType = c.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-            .surface = CurrentContext.Surface,
-            .minImageCount = image_count,
-            .imageFormat = surface_format.format,
-            .imageColorSpace = surface_format.colorSpace,
-            .imageExtent = extent,
-            .imageArrayLayers = 1,
-            .imageUsage = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-            .presentMode = present_mode,
-            .preTransform = capabilities.currentTransform,
-            // ignore alpha (from blending behind the window)
-            .compositeAlpha = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-            .clipped = 1,
-            .oldSwapchain = null,
-        };
-
-        const indices = [_]u32{ device.QueueFamilies.Graphics.?, device.QueueFamilies.Present.? };
-
-        if (device.QueueFamilies.Graphics == device.QueueFamilies.Present) {
-            create_info.imageSharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
-            create_info.queueFamilyIndexCount = 0;
-            create_info.pQueueFamilyIndices = null;
-        } else {
-            create_info.imageSharingMode = c.VK_SHARING_MODE_CONCURRENT;
-            create_info.queueFamilyIndexCount = 2;
-            create_info.pQueueFamilyIndices = &indices;
-        }
-
-        result = c.vkCreateSwapchainKHR(device.Device, &create_info, VulkanAllocator, &CurrentContext.Swapchain);
-        if (result != c.VK_SUCCESS) {
-            Panic("Could not create swapchain", result, .{});
         }
     }
 
@@ -498,22 +545,23 @@ pub const Renderer = struct {
             return;
         }
 
-        if (self.Context.Swapchain) |swapchain| {
-            c.vkDestroySwapchainKHR(self.GetDevice().Device, swapchain, VulkanAllocator);
-        }
+        self.Swapchain.Destroy();
 
-        if (self.Context.Surface) |surface| {
-            c.vkDestroySurfaceKHR(self.Context.Instance, surface, VulkanAllocator);
+        if (self.Surface) |surface| {
+            c.vkDestroySurfaceKHR(self.Instance, surface, VulkanAllocator);
         }
 
         self.GetDevice().Destroy();
 
-        if (self.Context.DebugMessenger != null) {
-            DestroyDebugUtilsMessengerEXT(self.Context.Instance, self.Context.DebugMessenger, VulkanAllocator);
+        if (self.DebugMessenger != null) {
+            DestroyDebugUtilsMessengerEXT(self.Instance, self.DebugMessenger, VulkanAllocator);
         }
 
-        c.vkDestroyInstance(self.Context.Instance, VulkanAllocator);
-        self.Context.Destroy();
+        c.vkDestroyInstance(self.Instance, VulkanAllocator);
+
+        if (self.AvailableExtensions) |extensions| {
+            allocator.free(extensions);
+        }
 
         self.Initialized = false;
     }
@@ -546,30 +594,43 @@ pub const QueueFamilies = struct {
 
         c.vkGetPhysicalDeviceQueueFamilyProperties(device.Physical.?, &family_count, self.RawFamilies.?.ptr);
 
+        Log.RenInfo("Amount of queue families: {d}", .{self.RawFamilies.?.len});
+
         for (self.RawFamilies.?, 0..) |family, index| {
-            // check for a graphics family
-            if ((family.queueFlags & c.VK_QUEUE_GRAPHICS_BIT) == 1) {
-                self.Graphics = @intCast(index);
+            if (self.Present != null and self.Graphics != null) {
+                break;
             }
 
-            // check for a presentation family
-            var present_support: u32 = 0;
-
-            const result = c.vkGetPhysicalDeviceSurfaceSupportKHR(
-                device.Physical,
-                @as(u32, @intCast(index)),
-                CurrentContext.Surface,
-                &present_support,
-            );
-
-            if (result != c.VK_SUCCESS) {
-                Panic("Could not get physical device surface support(presentation queue family)", result, .{});
+            if (family.queueCount == 0) {
+                continue;
             }
 
-            Log.Info("Present support: {d}", .{present_support});
+            {
+                // check for a graphics family
+                if ((family.queueFlags & c.VK_QUEUE_GRAPHICS_BIT) == 1) {
+                    self.Graphics = @intCast(index);
+                }
+            }
+            {
+                // check for a presentation family
+                var present_support: u32 = 0;
 
-            if (present_support > 0) {
-                self.Present = @as(u32, @intCast(index));
+                const result = c.vkGetPhysicalDeviceSurfaceSupportKHR(
+                    device.Physical,
+                    @as(u32, @intCast(index)),
+                    CurrentRenderer.Surface,
+                    &present_support,
+                );
+
+                if (result != c.VK_SUCCESS) {
+                    Panic("Could not get physical device surface support(presentation queue family)", result, .{});
+                }
+
+                Log.Info("Present support: {d}", .{present_support});
+
+                if (present_support > 0) {
+                    self.Present = @intCast(index);
+                }
             }
         }
     }
@@ -632,18 +693,36 @@ pub const Device = struct {
         if (self.Physical == null) {
             self.PickPhsyicalDevice();
         }
-        if (self.QueueFamilies.Graphics == null) {
+        if (self.QueueFamilies.Graphics == null or self.QueueFamilies.Present == null) {
             self.QueueFamilies.FindQueueFamilies(self);
         }
 
         const queue_priority: f32 = 1.0;
 
-        const queue_create_info = c.VkDeviceQueueCreateInfo{
-            .sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            .queueFamilyIndex = self.QueueFamilies.Graphics.?,
-            .queueCount = 1,
-            .pQueuePriorities = &queue_priority,
-        };
+        errdefer Panic("Could not create logical device", null, .{});
+
+        const queue_families = [_]?u32{ self.QueueFamilies.Graphics, self.QueueFamilies.Present };
+
+        var queue_create_infos = try std.ArrayList(c.VkDeviceQueueCreateInfo).initCapacity(allocator, queue_families.len);
+        defer queue_create_infos.deinit();
+
+        for (queue_families) |family| {
+            if (family == null) {
+                continue;
+            }
+
+            try queue_create_infos.append(c.VkDeviceQueueCreateInfo{
+                .sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                .queueFamilyIndex = family.?,
+                .queueCount = 1,
+                .pQueuePriorities = &queue_priority,
+            });
+
+            // TODO: add smarter method (add more families if one does not support graphics, present, etc.)
+            if (self.QueueFamilies.Graphics == self.QueueFamilies.Present) {
+                break;
+            }
+        }
 
         const device_features = c.VkPhysicalDeviceFeatures{};
 
@@ -655,8 +734,8 @@ pub const Device = struct {
 
         const create_info = c.VkDeviceCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            .pQueueCreateInfos = &queue_create_info,
-            .queueCreateInfoCount = 1,
+            .pQueueCreateInfos = queue_create_infos.items.ptr,
+            .queueCreateInfoCount = @intCast(queue_create_infos.items.len),
             .pEnabledFeatures = &device_features,
             // device specific extensions
             .enabledExtensionCount = device_extensions.len,
@@ -678,7 +757,7 @@ pub const Device = struct {
         errdefer @panic("Could not pick physical devices!");
 
         var device_count: u32 = 0;
-        _ = c.vkEnumeratePhysicalDevices(CurrentContext.Instance, &device_count, null);
+        _ = c.vkEnumeratePhysicalDevices(CurrentRenderer.Instance, &device_count, null);
 
         if (device_count == 0) {
             Panic("Could not find any physical devices with Vulkan support!", null, .{});
@@ -687,7 +766,7 @@ pub const Device = struct {
         const physical_devices = try allocator.alloc(c.VkPhysicalDevice, device_count);
         defer allocator.free(physical_devices);
 
-        const result = c.vkEnumeratePhysicalDevices(CurrentContext.Instance, &device_count, physical_devices.ptr);
+        const result = c.vkEnumeratePhysicalDevices(CurrentRenderer.Instance, &device_count, physical_devices.ptr);
 
         if (result != c.VK_SUCCESS) {
             Panic("Could not enumerate physical devices", result, .{});
@@ -709,7 +788,7 @@ pub const Device = struct {
     fn GetBestSurfaceFormat(self: Device) c.VkSurfaceFormatKHR {
         errdefer @panic("Could not get surface formats");
 
-        const surface = CurrentContext.Surface;
+        const surface = CurrentRenderer.Surface;
 
         var format_count: u32 = 0;
         _ = c.vkGetPhysicalDeviceSurfaceFormatsKHR(self.Physical, surface, &format_count, null);
@@ -733,6 +812,86 @@ pub const Device = struct {
 
         if (self.Device != null) {
             c.vkDestroyDevice(self.Device, VulkanAllocator);
+        }
+    }
+};
+
+pub fn CreateShaderModule(buffer: []u8) c.VkShaderModule {
+    const create_info = c.VkShaderModuleCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = buffer.len,
+        .pCode = @alignCast(@ptrCast(buffer.ptr)),
+    };
+
+    var shader: c.VkShaderModule = null;
+
+    const result = c.vkCreateShaderModule(CurrentRenderer.GetDevice().Device, &create_info, VulkanAllocator, &shader);
+    if (result != c.VK_SUCCESS) {
+        Panic("Could not create shader module", result, .{});
+    }
+    return shader;
+}
+
+pub fn DestroyShaderModule(shader: c.VkShaderModule) void {
+    c.vkDestroyShaderModule(CurrentRenderer.GetDevice().Device, shader, VulkanAllocator);
+}
+
+pub const ShaderList = struct {
+    Fragment: c.VkShaderModule,
+    Vertex: c.VkShaderModule,
+
+    pub const ShaderType = enum {
+        Vertex,
+        Fragment,
+    };
+
+    pub const ShaderInfo = struct {
+        Shader: c.VkShaderModule,
+        ShaderType: ShaderType,
+
+        pub fn GetStageBit(self: ShaderInfo) u32 {
+            return switch (self.ShaderType) {
+                .Vertex => c.VK_SHADER_STAGE_VERTEX_BIT,
+                .Fragment => c.VK_SHADER_STAGE_FRAGMENT_BIT,
+            };
+        }
+    };
+
+    pub fn GetShaderStages(self: ShaderList) []ShaderInfo {
+        errdefer Panic("Could not allocate shader stages", null, .{});
+        var shader_stages = try std.ArrayList(ShaderInfo).initCapacity(allocator, 2);
+
+        if (self.Vertex != null) {
+            try shader_stages.append(.{ .Shader = self.Vertex, .ShaderType = .Vertex });
+        }
+        if (self.Fragment != null) {
+            try shader_stages.append(.{ .Shader = self.Fragment, .ShaderType = .Fragment });
+        }
+
+        return shader_stages.items;
+    }
+};
+
+pub const GraphicsPipeline = struct {
+    Shaders: ShaderList = .{ .Fragment = null, .Vertex = null },
+
+    pub fn Create(self: *GraphicsPipeline, shader_list: ShaderList) void {
+        self.Shaders = shader_list;
+
+        const specialization_info = c.VkSpecializationInfo{ .mapEntryCount = 0, .pMapEntries = null, .dataSize = 0, .pData = null };
+
+        const shader_stages = self.Shaders.GetShaderStages();
+        defer allocator.free(shader_stages);
+
+        for (shader_stages) |stage| {
+            const shader_stage_info = c.VkPipelineShaderStageCreateInfo{
+                .sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = stage.GetStageBit(),
+                .module = stage.Shader,
+                .pName = "main",
+                .pSpecializationInfo = &specialization_info,
+            };
+            _ = shader_stage_info;
         }
     }
 };

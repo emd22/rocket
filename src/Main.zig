@@ -14,7 +14,6 @@ const FRenderer = @import("Renderer.zig");
 var Renderer = FRenderer.Renderer;
 const Vertex = FRenderer.Vertex;
 
-var RenderContext: *FRenderer.Context = FRenderer.GetRenderContext();
 var test_mesh: Mesh = Mesh{};
 var running: bool = true;
 
@@ -66,7 +65,7 @@ var Controls = struct {
 
     pub fn LockMouse(self: *Self, value: bool) void {
         self.MouseLocked = value;
-        if (!c.SDL_SetWindowRelativeMouseMode(RenderContext.Window, self.MouseLocked)) {
+        if (!c.SDL_SetWindowRelativeMouseMode(Renderer.Window, self.MouseLocked)) {
             Log.Error("Could not lock mouse! ({s})", .{c.SDL_GetError()});
         }
     }
@@ -474,7 +473,7 @@ pub fn main() !void {
 
     defer model.Destroy();
 
-    const window_size = RenderContext.WindowSize;
+    const window_size = Renderer.WindowSize;
     const aspect_ratio: f32 = @as(f32, @floatFromInt(window_size.X())) / @as(f32, @floatFromInt(window_size.Y()));
 
     Player.Camera.UpdateProjectionMatrix(.{ .AspectRatio = aspect_ratio });
