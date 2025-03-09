@@ -379,15 +379,6 @@ test "matrix multiply" {
     try testing.expect(c.Equals(expected));
 }
 
-test "matrix3 from quaternion" {
-    var quat = q.Quat(0.7071, 0.0, 0.7071, 0.0);
-    quat.Normalized();
-    var mat = Mat3.FromQuaternion0(quat);
-    Log.Debug("Matrix from quaternion: ", .{});
-    mat.Print();
-    std.debug.print("\n", .{});
-}
-
 // 1 0 4 -6
 // 2 5 0 3
 // -1 2 3 5

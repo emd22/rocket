@@ -17,8 +17,6 @@ pub const Vertex = struct {
 };
 
 pub const Renderer = struct {
-    Pipeline: ?*c.SDL_GPUGraphicsPipeline = null,
-
     Window: *c.SDL_Window = undefined,
     Device: ?*c.SDL_GPUDevice = null,
 
@@ -30,6 +28,8 @@ pub const Renderer = struct {
     DepthTexture: ?*c.SDL_GPUTexture = null,
 
     Renderer: *VkRenderer = undefined,
+
+    GraphicsPipeline: v.GraphicsPipeline = v.GraphicsPipeline{},
 
     const Self = @This();
 
@@ -66,8 +66,7 @@ pub const Renderer = struct {
             try shaders.Fragment.Load(Shader.Type.Fragment, "./shaders/main.frag.spv", .{});
         }
 
-        var pipeline = v.GraphicsPipeline{};
-        pipeline.Create(.{
+        self.GraphicsPipeline.Create(.{
             .Vertex = shaders.Vertex.Shader,
             .Fragment = shaders.Fragment.Shader,
         });
@@ -139,10 +138,7 @@ pub const Renderer = struct {
     }
 
     pub fn Destroy(self: *Self) void {
-        if (self.Pipeline != null) {
-            // c.SDL_ReleaseGPUGraphicsPipeline(RenderContext.Device, self.Pipeline);
-            self.Pipeline = null;
-        }
+        self.GraphicsPipeline.Destroy();
 
         self.Renderer.Free();
 

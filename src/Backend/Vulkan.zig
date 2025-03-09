@@ -26,6 +26,19 @@ pub fn SetCurrentRenderer(renderer: *Renderer) void {
     CurrentRenderer = renderer;
 }
 
+pub fn AssertRendererExists(options: struct { CheckInitialized: bool = true }) void {
+    if (comptime VULKAN_DEBUG == false) {
+        return;
+    }
+
+    // if (CurrentRenderer == null) {
+    //     Panic("No renderer has been created or selected", null, .{});
+    // }
+    if (options.CheckInitialized and !CurrentRenderer.Initialized) {
+        Panic("A renderer has been created but not initialized!", null, .{});
+    }
+}
+
 /// Gets the handle for a function in a Vulkan extension.
 ///
 /// ```
@@ -116,7 +129,17 @@ pub const Swapchain = struct {
 
     ImageFormat: c.VkSurfaceFormatKHR = undefined,
 
+    Extent: TVec2i = TVec2i.Zero,
+
     const Self = @This();
+
+    pub fn Create(self: *Self, size: TVec2i) void {
+        // swapchains are part of the initialization stage
+        AssertRendererExists(.{ .CheckInitialized = false });
+
+        self.CreateSwapchain(size);
+        self.CreateSwapchainImages();
+    }
 
     fn CreateImageViews(self: *Self) void {
         self.ImageViews = allocator.alloc(c.VkImageView, self.Images.len);
@@ -156,11 +179,6 @@ pub const Swapchain = struct {
         c.vkDestroySwapchainKHR(device, self.Swapchain, VulkanAllocator);
     }
 
-    pub fn Create(self: *Self, size: TVec2i) void {
-        self.CreateSwapchain(size);
-        self.CreateSwapchainImages();
-    }
-
     fn CreateSwapchainImages(self: *Self) void {
         var image_count: u32 = 0;
 
@@ -174,6 +192,8 @@ pub const Swapchain = struct {
     }
 
     fn CreateSwapchain(self: *Self, size: TVec2i) void {
+        self.Extent = size;
+
         const device = CurrentRenderer.GetDevice();
 
         var capabilities = c.VkSurfaceCapabilitiesKHR{};
@@ -213,7 +233,7 @@ pub const Swapchain = struct {
             .preTransform = capabilities.currentTransform,
             // ignore alpha (from blending behind the window)
             .compositeAlpha = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-            .clipped = 1,
+            .clipped = c.VK_TRUE,
             .oldSwapchain = null,
         };
 
@@ -296,7 +316,7 @@ pub const Renderer = struct {
 
     const Self = @This();
 
-    pub fn GetDevice(self: Self) Device {
+    pub inline fn GetDevice(self: Self) Device {
         if (self.Device == null) {
             Panic("No device selected!\n", null, .{});
         }
@@ -429,7 +449,7 @@ pub const Renderer = struct {
             }
         }
 
-        Log.Info("found {d} extensions, requested {d}", .{ extensions_found.count(), requested.len });
+        Log.Info("Found {d} extensions, requested {d}", .{ extensions_found.count(), requested.len });
 
         // all extensions have been found
         if (extensions_found.count() == requested.len) {
@@ -872,10 +892,68 @@ pub const ShaderList = struct {
     }
 };
 
+pub const RenderPass = struct {
+    RenderPass: c.VkRenderPass = null,
+
+    pub fn Create(self: *RenderPass, swapchain: Swapchain) void {
+        AssertRendererExists(.{});
+
+        const color_attachment = c.VkAttachmentDescription{
+            .format = swapchain.ImageFormat.format,
+            .samples = c.VK_SAMPLE_COUNT_1_BIT,
+
+            .loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = c.VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = c.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+
+            .initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        };
+
+        const color_attachment_ref = c.VkAttachmentReference{
+            .attachment = 0,
+            .layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        };
+
+        const subpass = c.VkSubpassDescription{
+            .pipelineBindPoint = c.VK_PIPELINE_BIND_POINT_GRAPHICS,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &color_attachment_ref,
+        };
+
+        const render_pass_info = c.VkRenderPassCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+            .attachmentCount = 1,
+            .pAttachments = &color_attachment,
+            .subpassCount = 1,
+            .pSubpasses = &subpass,
+        };
+
+        const result = c.vkCreateRenderPass(CurrentRenderer.GetDevice().Device, &render_pass_info, VulkanAllocator, &self.RenderPass);
+        if (result != c.VK_SUCCESS) {
+            Panic("Could not create renderpass!", result, .{});
+        }
+    }
+
+    pub fn Destroy(self: RenderPass) void {
+        const device = CurrentRenderer.GetDevice().Device;
+
+        c.vkDestroyRenderPass(device, self.RenderPass, VulkanAllocator);
+    }
+};
+
 pub const GraphicsPipeline = struct {
     Shaders: ShaderList = .{ .Fragment = null, .Vertex = null },
+    Layout: c.VkPipelineLayout = null,
+
+    Pipeline: c.VkPipeline = null,
+
+    RenderPass: RenderPass = RenderPass{},
 
     pub fn Create(self: *GraphicsPipeline, shader_list: ShaderList) void {
+        AssertRendererExists(.{});
+
         self.Shaders = shader_list;
 
         const specialization_info = c.VkSpecializationInfo{ .mapEntryCount = 0, .pMapEntries = null, .dataSize = 0, .pData = null };
@@ -883,15 +961,179 @@ pub const GraphicsPipeline = struct {
         const shader_stages = self.Shaders.GetShaderStages();
         defer allocator.free(shader_stages);
 
+        errdefer Panic("Could not allocate memory for Graphics Pipeline!", null, .{});
+
+        var shader_create_info = try std.ArrayList(c.VkPipelineShaderStageCreateInfo).initCapacity(allocator, 2);
+        defer shader_create_info.deinit();
+
         for (shader_stages) |stage| {
-            const shader_stage_info = c.VkPipelineShaderStageCreateInfo{
+            const info = c.VkPipelineShaderStageCreateInfo{
                 .sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .stage = stage.GetStageBit(),
                 .module = stage.Shader,
                 .pName = "main",
                 .pSpecializationInfo = &specialization_info,
             };
-            _ = shader_stage_info;
+            try shader_create_info.append(info);
+        }
+
+        const dynamic_states = [_]c.VkDynamicState{
+            c.VK_DYNAMIC_STATE_VIEWPORT,
+            c.VK_DYNAMIC_STATE_SCISSOR,
+        };
+
+        const dynamic_state_info = c.VkPipelineDynamicStateCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .dynamicStateCount = dynamic_states.len,
+            .pDynamicStates = &dynamic_states,
+        };
+
+        const vertex_input_info = c.VkPipelineVertexInputStateCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            .vertexBindingDescriptionCount = 0,
+            .pVertexBindingDescriptions = null,
+            .vertexAttributeDescriptionCount = 0,
+            .pVertexAttributeDescriptions = null,
+        };
+
+        const input_assembly_info = c.VkPipelineInputAssemblyStateCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .topology = c.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            .primitiveRestartEnable = 0,
+        };
+
+        const extent = CurrentRenderer.Swapchain.Extent;
+
+        const viewport = c.VkViewport{
+            .x = 0,
+            .y = 0,
+            .width = @floatFromInt(extent.X()),
+            .height = @floatFromInt(extent.Y()),
+            .minDepth = 0.0,
+            .maxDepth = 1.0,
+        };
+
+        const scissor = c.VkRect2D{
+            .offset = .{ .x = 0, .y = 0 },
+            .extent = .{ .width = @intCast(extent.X()), .height = @intCast(extent.Y()) },
+        };
+
+        const viewport_state = c.VkPipelineViewportStateCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .viewportCount = 1,
+            .scissorCount = 1,
+            .pViewports = &viewport,
+            .pScissors = &scissor,
+        };
+
+        const rasterizer = c.VkPipelineRasterizationStateCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .depthClampEnable = 0, // TODO: come back to this at shadowmap time
+            .rasterizerDiscardEnable = 0,
+            .polygonMode = c.VK_POLYGON_MODE_FILL,
+            .lineWidth = 1.0,
+            .cullMode = c.VK_CULL_MODE_NONE,
+            .frontFace = c.VK_FRONT_FACE_CLOCKWISE,
+            // depth bias
+            .depthBiasEnable = 0,
+            .depthBiasConstantFactor = 0.0,
+            .depthBiasClamp = 0.0,
+            .depthBiasSlopeFactor = 0.0,
+        };
+
+        const multisampling = c.VkPipelineMultisampleStateCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .sampleShadingEnable = 0,
+            .rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT,
+            .minSampleShading = 1.0,
+            .pSampleMask = null,
+            .alphaToCoverageEnable = 0,
+            .alphaToOneEnable = 0,
+        };
+
+        const color_blend_attachment = c.VkPipelineColorBlendAttachmentState{
+            .colorWriteMask = c.VK_COLOR_COMPONENT_R_BIT | c.VK_COLOR_COMPONENT_G_BIT | c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT,
+            .blendEnable = c.VK_FALSE,
+            // color blending
+            .srcColorBlendFactor = c.VK_BLEND_FACTOR_ONE,
+            .dstColorBlendFactor = c.VK_BLEND_FACTOR_ZERO,
+            .colorBlendOp = c.VK_BLEND_OP_ADD,
+            // alpha blending
+            .srcAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE,
+            .dstAlphaBlendFactor = c.VK_BLEND_FACTOR_ZERO,
+            .alphaBlendOp = c.VK_BLEND_OP_ADD,
+        };
+
+        const color_blend_state_info = c.VkPipelineColorBlendStateCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .logicOpEnable = c.VK_FALSE,
+            .logicOp = c.VK_LOGIC_OP_COPY,
+            .attachmentCount = 1,
+            .pAttachments = &color_blend_attachment,
+            .blendConstants = @splat(0),
+        };
+
+        self.CreateLayout();
+
+        self.RenderPass.Create(CurrentRenderer.Swapchain);
+
+        const pipeline_info = c.VkGraphicsPipelineCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            // shader info
+            .stageCount = @intCast(shader_create_info.items.len),
+            .pStages = shader_create_info.items.ptr,
+            // vertex/rasterization
+            .pVertexInputState = &vertex_input_info,
+            .pInputAssemblyState = &input_assembly_info,
+            .pViewportState = &viewport_state,
+            .pRasterizationState = &rasterizer,
+            .pMultisampleState = &multisampling,
+            .pDepthStencilState = null,
+            .pColorBlendState = &color_blend_state_info,
+            .pDynamicState = &dynamic_state_info,
+            /////////////////////////////////////////////
+            .layout = self.Layout,
+            // render pass
+            .renderPass = self.RenderPass.RenderPass,
+            .subpass = 0,
+            ///////////////////////////////////
+            .basePipelineIndex = -1,
+            .basePipelineHandle = @ptrCast(c.VK_NULL_HANDLE),
+        };
+
+        const result = c.vkCreateGraphicsPipelines(CurrentRenderer.GetDevice().Device, null, 1, &pipeline_info, VulkanAllocator, &self.Pipeline);
+        if (result != c.VK_SUCCESS) {
+            Panic("Failed to create graphics pipeline", result, .{});
+        }
+    }
+
+    fn CreateLayout(self: *GraphicsPipeline) void {
+        const pipeline_layout_info = c.VkPipelineLayoutCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 0,
+            .pSetLayouts = null,
+            .pushConstantRangeCount = 0,
+            .pPushConstantRanges = null,
+        };
+
+        const result = c.vkCreatePipelineLayout(CurrentRenderer.GetDevice().Device, &pipeline_layout_info, VulkanAllocator, &self.Layout);
+
+        if (result != c.VK_SUCCESS) {
+            Panic("Could not create graphics pipeline layout", result, .{});
+        }
+    }
+
+    pub fn Destroy(self: *GraphicsPipeline) void {
+        const device = CurrentRenderer.GetDevice().Device;
+
+        self.RenderPass.Destroy();
+
+        if (self.Layout) |layout| {
+            c.vkDestroyPipelineLayout(device, layout, null);
+        }
+
+        if (self.Pipeline) |pipeline| {
+            c.vkDestroyPipeline(device, pipeline, VulkanAllocator);
         }
     }
 };
