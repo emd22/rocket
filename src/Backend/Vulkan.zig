@@ -137,9 +137,9 @@ pub const CommandPool = struct {
             .flags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
         };
 
-        const status = c.vkCreateCommandPool(CurrentRenderer.GetDevice().Device, pool_info, VulkanAllocator, &self.CommandPool);
+        const status = c.vkCreateCommandPool(CurrentRenderer.GetDevice().Device, &pool_info, VulkanAllocator, &self.CommandPool);
         if (status != c.VK_SUCCESS) {
-            Panic("Could not create command pool!", status);
+            Panic("Could not create command pool!", null, .{});
         }
     }
 
@@ -150,6 +150,7 @@ pub const CommandPool = struct {
 
 pub const CommandBuffer = struct {
     CommandBuffer: c.VkCommandBuffer = null,
+
     CommandPool: *CommandPool = undefined,
     Initialized: bool = false,
 
@@ -161,23 +162,31 @@ pub const CommandBuffer = struct {
             .commandBufferCount = 1,
         };
 
-        self.CommandPool = CommandPool;
+        self.CommandPool = command_pool;
 
         const status = c.vkAllocateCommandBuffers(CurrentRenderer.GetDevice().Device, &buffer_info, &self.CommandBuffer);
         if (status != c.VK_SUCCESS) {
             Panic("Could not allocate command buffer!", status, .{});
         }
+
+        self.Initialized = true;
     }
 
-    pub fn Record(self: CommandBuffer) void {
+    inline fn CheckInitialized(self: CommandBuffer) void {
         if (!self.Initialized) {
             Panic("Command buffer has not been initialized!", null, .{});
         }
+    }
+
+    pub fn Record(self: *CommandBuffer) void {
+        self.CheckInitialized();
         const begin_info = c.VkCommandBufferBeginInfo{
             .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = 0,
             .pInheritanceInfo = null,
         };
+
+        Log.Info("Start recording command buffer", .{});
 
         const status = c.vkBeginCommandBuffer(self.CommandBuffer, &begin_info);
         if (status != c.VK_SUCCESS) {
@@ -185,11 +194,13 @@ pub const CommandBuffer = struct {
         }
     }
 
-    pub fn Reset(self: CommandBuffer) void {
+    pub fn Reset(self: *CommandBuffer) void {
+        self.CheckInitialized();
         _ = c.vkResetCommandBuffer(self.CommandBuffer, 0);
     }
 
-    pub fn End(self: CommandBuffer) void {
+    pub fn End(self: *CommandBuffer) void {
+        self.CheckInitialized();
         const status = c.vkEndCommandBuffer(self.CommandBuffer);
         if (status != c.VK_SUCCESS) {
             Panic("Failed to record command buffer", status, .{});
@@ -215,6 +226,10 @@ pub const Swapchain = struct {
 
     Extent: TVec2i = TVec2i.Zero,
 
+    Initialized: bool = false,
+
+    FramesInFlight: u32 = 0,
+
     const Self = @This();
 
     pub fn Create(self: *Self, size: TVec2i) void {
@@ -223,6 +238,9 @@ pub const Swapchain = struct {
 
         self.CreateSwapchain(size);
         self.CreateSwapchainImages();
+        self.CreateImageViews();
+
+        self.Initialized = true;
     }
 
     pub fn GetNextImage(self: Swapchain, image_available: Semaphore) void {
@@ -232,28 +250,36 @@ pub const Swapchain = struct {
         );
     }
 
-    fn CreateSwapchainFramebuffers(self: *Swapchain, graphics_pipeline: GraphicsPipeline) void {
+    pub fn CreateSwapchainFramebuffers(self: *Swapchain, graphics_pipeline: GraphicsPipeline) void {
+        Log.RenDebug("Image view count: {d}", .{self.ImageViews.len});
         self.Framebuffers = allocator.alloc(Framebuffer, self.ImageViews.len) catch {
             Panic("Could not allocate framebuffers", null, .{});
         };
 
         for (self.ImageViews, 0..) |image_view, index| {
-            const views = [_]c.VkImageView{image_view};
+            var views = [_]c.VkImageView{image_view};
 
-            self.Framebuffers[index].Create(views, graphics_pipeline, self.Extent);
+            self.Framebuffers[index].Create(&views, graphics_pipeline, self.Extent);
         }
     }
 
     fn CreateImageViews(self: *Swapchain) void {
-        self.ImageViews = allocator.alloc(c.VkImageView, self.Images.len);
+        self.ImageViews = allocator.alloc(c.VkImageView, self.Images.len) catch {
+            Panic("Could not allocate image views", null, .{});
+        };
 
         for (self.Images, 0..) |image, index| {
             const create_info = c.VkImageViewCreateInfo{
                 .sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                 .image = image,
                 .viewType = c.VK_IMAGE_VIEW_TYPE_2D,
-                .format = self.ImageFormat,
-                .components = @splat(c.VK_COMPONENT_SWIZZLE_IDENTITY),
+                .format = self.ImageFormat.format,
+                .components = .{
+                    .a = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .b = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .g = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .r = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+                },
                 .subresourceRange = .{
                     .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
                     .baseMipLevel = 0,
@@ -263,7 +289,7 @@ pub const Swapchain = struct {
                 },
             };
 
-            const result = c.vkCreateImageView(CurrentRenderer.GetDevice(), &create_info, null, &self.ImageViews[index]);
+            const result = c.vkCreateImageView(CurrentRenderer.GetDevice().Device, &create_info, null, &self.ImageViews[index]);
             if (result != c.VK_SUCCESS) {
                 Panic("Could not create swapchain image view", result, .{});
             }
@@ -281,6 +307,8 @@ pub const Swapchain = struct {
         allocator.free(self.ImageViews);
         allocator.free(self.Images);
         c.vkDestroySwapchainKHR(device, self.Swapchain, VulkanAllocator);
+
+        self.Initialized = false;
     }
 
     fn CreateSwapchainImages(self: *Self) void {
@@ -314,10 +342,13 @@ pub const Swapchain = struct {
 
         // TODO: look more into what the best swapchain image count would be
         var image_count = capabilities.minImageCount + 1;
+        Log.RenInfo("Swapchain - min:{d}, max:{d}", .{ capabilities.minImageCount, capabilities.maxImageCount });
 
         if (capabilities.maxImageCount > 0 and image_count > capabilities.maxImageCount) {
             image_count = capabilities.maxImageCount;
         }
+
+        self.FramesInFlight = image_count;
 
         self.ImageFormat = device.GetBestSurfaceFormat();
 
@@ -412,8 +443,8 @@ pub const Framebuffer = struct {
 
         const create_info = c.VkFramebufferCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-            .renderPass = graphics_pipeline.RenderPass,
-            .attachmentCount = image_views.len,
+            .renderPass = graphics_pipeline.RenderPass.RenderPass,
+            .attachmentCount = @intCast(image_views.len),
             .pAttachments = image_views.ptr,
             .width = @intCast(size.Width()),
             .height = @intCast(size.Height()),
@@ -422,7 +453,7 @@ pub const Framebuffer = struct {
 
         const device = GetCurrentRenderer().GetDevice().Device;
 
-        const result = c.vkCreateFramebuffer(device, create_info, VulkanAllocator, &self.Framebuffer);
+        const result = c.vkCreateFramebuffer(device, &create_info, VulkanAllocator, &self.Framebuffer);
         if (result != c.VK_SUCCESS) {
             Panic("Failed to create framebuffer", result, .{});
         }
@@ -458,7 +489,7 @@ pub const Semaphore = struct {
         );
     }
 
-    pub inline fn Get(self: Semaphore) c.VkSemaphone {
+    pub inline fn Get(self: Semaphore) c.VkSemaphore {
         return self.Semaphore;
     }
 
@@ -487,18 +518,15 @@ pub const Fence = struct {
 
     const WaitOptions = struct { Timeout: u64 = std.math.maxInt(u64) };
 
-    pub inline fn ResetMany(fences: []Fence) void {
-        TryVk(
-            c.vkResetFences(CurrentRenderer.GetDevice().Device, fences.len, &fences.ptr),
-            "Could not reset fences!",
-        );
+    pub inline fn ResetMany(fences: []c.VkFence) void {
+        TryVk(c.vkResetFences(CurrentRenderer.GetDevice().Device, fences.len, &fences.ptr), "Could not reset fences!");
     }
 
     pub inline fn Reset(self: Fence) void {
-        Fence.ResetMany([_]Fence{self});
+        TryVk(c.vkResetFences(CurrentRenderer.GetDevice().Device, 1, &self.Fence), "Error resetting fence");
     }
 
-    pub inline fn WaitForMany(fences: []Fence, options: WaitOptions) void {
+    pub inline fn WaitForMany(fences: []c.VkFence, options: WaitOptions) void {
         TryVk(
             c.vkWaitForFences(CurrentRenderer.GetDevice().Device, fences.len, &fences.ptr, c.VK_TRUE, options.Timeout),
             "Could not wait for fences!",
@@ -506,7 +534,10 @@ pub const Fence = struct {
     }
 
     pub inline fn WaitFor(self: Fence, options: WaitOptions) void {
-        Fence.WaitForMany([_]Fence{self}, options);
+        TryVk(
+            c.vkWaitForFences(CurrentRenderer.GetDevice().Device, 1, &self.Fence, c.VK_TRUE, options.Timeout),
+            "Could not wait for fences",
+        );
     }
 
     pub inline fn Get(self: Fence) c.VkFence {
@@ -517,6 +548,12 @@ pub const Fence = struct {
         c.vkDestroyFence(GetCurrentRenderer().GetDevice().Get(), self.Fence, VulkanAllocator);
     }
 };
+
+pub fn Assert(cond: bool) void {
+    if (!cond) {
+        @panic("Renderer assertion failure");
+    }
+}
 
 pub const Renderer = struct {
     Initialized: bool = false,
@@ -538,7 +575,7 @@ pub const Renderer = struct {
 
     Frames: []FrameData = undefined,
     FrameNumber: u32 = 0,
-    const FRAME_OVERLAP = 2;
+    FramesInFlight: u32 = 0,
 
     const Self = @This();
 
@@ -574,16 +611,25 @@ pub const Renderer = struct {
     }
 
     pub fn InitFrames(self: *Self) void {
-        const graphics_family = self.GetDevice().QueueFamilies.Graphics;
+        Assert(self.GetDevice().QueueFamilies.Graphics != null);
 
-        for (self.Frames) |*frame| {
-            frame.*.CommandPool.Create(graphics_family);
-            frame.*.CommandBuffer.Create(frame.*.CommandPool);
+        self.FramesInFlight = self.Swapchain.FramesInFlight;
+
+        self.Frames = allocator.alloc(FrameData, self.FramesInFlight) catch {
+            Panic("Could not allocate frame data", null, .{});
+        };
+
+        const graphics_family = self.GetDevice().QueueFamilies.Graphics.?;
+
+        for (0..self.Frames.len) |index| {
+            self.Frames[index].CommandPool.Create(graphics_family);
+            self.Frames[index].CommandBuffer.Create(&self.Frames[index].CommandPool);
         }
     }
 
     pub inline fn GetFrameIndex(self: Self) u32 {
-        return (self.FrameNumber & 0x01);
+        // return (self.FrameNumber);
+        return 0;
     }
 
     pub fn DestroyFrames(self: *Self) void {
@@ -616,9 +662,7 @@ pub const Renderer = struct {
 
         self.Swapchain.Create(window_size);
 
-        self.Frames = allocator.alloc(FrameData, FRAME_OVERLAP) catch {
-            Panic("Could not allocate frame data", null, .{});
-        };
+        self.InitFrames();
 
         // render semaphores
         self.ImageAvailable.Create();
@@ -659,10 +703,14 @@ pub const Renderer = struct {
         }
     }
 
-    pub fn BeginFrame(self: Renderer, pipeline: GraphicsPipeline) void {
-        self.Swapchain.GetNextImage(self.ImageAvailable);
+    pub fn BeginFrame(self: Renderer, pipeline: *GraphicsPipeline) void {
+        self.InFlight.WaitFor(.{});
+        self.InFlight.Reset();
 
-        const command_buffer = self.GetFrame().CommandBuffer;
+        self.Swapchain.GetNextImage(self.ImageAvailable);
+        Log.RenDebug("Frame number: {d}", .{self.FrameNumber});
+
+        var command_buffer = self.GetFrame().CommandBuffer;
 
         command_buffer.Reset();
         command_buffer.Record();
@@ -675,57 +723,63 @@ pub const Renderer = struct {
         const viewport = c.VkViewport{
             .x = 0,
             .y = 0,
-            .width = width,
-            .height = height,
+            .width = @floatFromInt(width),
+            .height = @floatFromInt(height),
             .minDepth = 0.0,
             .maxDepth = 1.0,
         };
-        c.vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+        c.vkCmdSetViewport(command_buffer.CommandBuffer, 0, 1, &viewport);
 
         const scissor = c.VkRect2D{
             .offset = .{ .x = 0, .y = 0 },
-            .extent = .{ .width = width, .height = height },
+            .extent = .{ .width = @intCast(width), .height = @intCast(height) },
         };
-        c.vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+        c.vkCmdSetScissor(command_buffer.CommandBuffer, 0, 1, &scissor);
     }
 
     fn PresentFrame(self: Renderer) void {
+        Assert(self.Swapchain.Initialized == true);
         const present_info = c.VkPresentInfoKHR{
             .sType = c.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &self.RenderFinished,
+            .pWaitSemaphores = &self.RenderFinished.Semaphore,
 
+            .swapchainCount = 1,
             .pSwapchains = &self.Swapchain.Swapchain,
             .pImageIndices = &self.FrameNumber,
 
             .pResults = null,
         };
+
         TryVk(c.vkQueuePresentKHR(self.GetDevice().PresentQueue, &present_info), "Could not present graphics queue");
     }
 
     fn SubmitFrame(self: Renderer) void {
+        const wait_stages = [_]c.VkPipelineStageFlags{
+            @intCast(c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT),
+        };
         const submit_info = c.VkSubmitInfo{
             .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .waitSemaphoreCount = 1,
             .pWaitSemaphores = &self.ImageAvailable.Semaphore,
-            .pWaitDstStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .pWaitDstStageMask = &wait_stages,
             // command buffers
             .commandBufferCount = 1,
-            .pCommandBuffers = &self.GetFrame().CommandBuffer,
+            .pCommandBuffers = &self.GetFrame().CommandBuffer.CommandBuffer,
             // signal semaphores
             .signalSemaphoreCount = 1,
             .pSignalSemaphores = &self.RenderFinished.Semaphore,
         };
+        // const fence = self.InFlight.Fence;
         TryVk(c.vkQueueSubmit(self.GetDevice().GraphicsQueue, 1, &submit_info, self.InFlight.Fence), "Error submitting draw buffer");
     }
 
     pub inline fn FinishFrame(self: *Renderer, pipeline: GraphicsPipeline) void {
-        const command_buffer = self.GetFrame().CommandBuffer;
+        var command_buffer = self.GetFrame().CommandBuffer;
 
         pipeline.RenderPass.End();
 
         command_buffer.End();
-
         self.SubmitFrame();
         self.PresentFrame();
     }
@@ -1303,21 +1357,24 @@ pub const RenderPass = struct {
         }
     }
 
-    pub fn Begin(self: RenderPass) void {
+    pub fn Begin(self: *RenderPass) void {
         if (self.RenderPass == null) {
             Panic("Renderpass not previously created", null, .{});
         }
 
+        Log.Info("Start render pass", .{});
+
         const extent = CurrentRenderer.Swapchain.Extent;
 
         const renderer = CurrentRenderer;
-        const clear_color = c.VkClearValue{ .color = .{ .float32 = 1.0 } };
+
+        const clear_color = c.VkClearValue{ .color = .{ .float32 = @splat(1.0) } };
         const begin_info = c.VkRenderPassBeginInfo{
             .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             .renderPass = self.RenderPass,
-            .framebuffer = renderer.Swapchain.Framebuffers[renderer.GetFrameIndex()],
+            .framebuffer = renderer.Swapchain.Framebuffers[renderer.GetFrameIndex()].Framebuffer,
             .renderArea = .{
-                .extent = .{ .width = extent.Width(), .height = extent.Height() },
+                .extent = .{ .width = @intCast(extent.Width()), .height = @intCast(extent.Height()) },
                 .offset = .{ .x = 0, .y = 0 },
             },
             .pClearValues = &clear_color,
@@ -1327,12 +1384,10 @@ pub const RenderPass = struct {
 
         const frame = renderer.GetFrame();
 
-        self.CommandBuffer = frame.CommandBuffer;
+        self.CommandBuffer = &frame.CommandBuffer;
+        Assert(self.CommandBuffer != null);
 
-        const status = c.vkCmdBeginRenderPass(self.CommandBuffer.?.CommandBuffer, &begin_info, c.VK_SUBPASS_CONTENTS_INLINE);
-        if (status != c.VK_SUCCESS) {
-            Panic("Could not begin render pass", status, .{});
-        }
+        c.vkCmdBeginRenderPass(self.CommandBuffer.?.CommandBuffer, &begin_info, c.VK_SUBPASS_CONTENTS_INLINE);
     }
 
     pub fn End(self: RenderPass) void {

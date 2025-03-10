@@ -16,6 +16,8 @@ pub const Vertex = struct {
     Normal: @Vector(3, f32) = @splat(0),
 };
 
+var GraphicsPipeline = v.GraphicsPipeline{};
+
 pub const Renderer = struct {
     Window: *c.SDL_Window = undefined,
     Device: ?*c.SDL_GPUDevice = null,
@@ -28,8 +30,6 @@ pub const Renderer = struct {
     DepthTexture: ?*c.SDL_GPUTexture = null,
 
     Renderer: *VkRenderer = undefined,
-
-    GraphicsPipeline: v.GraphicsPipeline = v.GraphicsPipeline{},
 
     const Self = @This();
 
@@ -66,11 +66,12 @@ pub const Renderer = struct {
             try shaders.Fragment.Load(Shader.Type.Fragment, "./shaders/main.frag.spv", .{});
         }
 
-        self.GraphicsPipeline.Create(.{
+        GraphicsPipeline.Create(.{
             .Vertex = shaders.Vertex.Shader,
             .Fragment = shaders.Fragment.Shader,
         });
 
+        self.Renderer.Swapchain.CreateSwapchainFramebuffers(GraphicsPipeline);
         // const swapchain_success = c.SDL_SetGPUSwapchainParameters(
         //     RenderContext.Device,
         //     RenderContext.Window,
@@ -110,11 +111,11 @@ pub const Renderer = struct {
     }
 
     pub fn Render(self: Self) void {
-        self.Renderer.BeginFrame(self.GraphicsPipeline);
+        self.Renderer.BeginFrame(&GraphicsPipeline);
 
         c.vkCmdDraw(self.Renderer.GetFrame().CommandBuffer.CommandBuffer, 3, 1, 0, 0);
 
-        self.Renderer.FinishFrame(self.GraphicsPipeline);
+        self.Renderer.FinishFrame(GraphicsPipeline);
     }
 
     fn CreateWindow(self: *Self) void {
@@ -146,7 +147,7 @@ pub const Renderer = struct {
     }
 
     pub fn Destroy(self: *Self) void {
-        self.GraphicsPipeline.Destroy();
+        GraphicsPipeline.Destroy();
 
         self.Renderer.Free();
 

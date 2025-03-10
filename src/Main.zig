@@ -174,6 +174,8 @@ fn Render() void {
     const mvp_matrix = ModelMatrix.Multiply(Player.Camera.GetVPMatrix());
     _ = mvp_matrix;
 
+    Renderer.Render();
+
     // const color_target_info: c.SDL_GPUColorTargetInfo = .{
     //     .texture = swapchain_texture,
     //     .clear_color = c.SDL_FColor{ .r = 0, .g = 0, .b = 0, .a = 1.0 },
@@ -338,7 +340,6 @@ const Mesh = struct {
         _ = mvp_matrix;
         _ = model_matrix;
 
-        Renderer.Render();
         // c.SDL_PushGPUVertexUniformData(command_buffer, 0, &mvp_matrix.v, @sizeOf(m.Mat4));
         // c.SDL_PushGPUVertexUniformData(command_buffer, 1, &model_matrix.v, @sizeOf(m.Mat4));
 
