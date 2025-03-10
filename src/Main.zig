@@ -337,6 +337,8 @@ const Mesh = struct {
         _ = command_buffer;
         _ = mvp_matrix;
         _ = model_matrix;
+
+        Renderer.Render();
         // c.SDL_PushGPUVertexUniformData(command_buffer, 0, &mvp_matrix.v, @sizeOf(m.Mat4));
         // c.SDL_PushGPUVertexUniformData(command_buffer, 1, &model_matrix.v, @sizeOf(m.Mat4));
 

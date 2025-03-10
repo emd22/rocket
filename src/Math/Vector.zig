@@ -93,6 +93,18 @@ pub fn TVec(comptime T: type) type {
             return self.v[3];
         }
 
+        pub inline fn Width(self: Self) ElementType {
+            return self.X();
+        }
+
+        pub inline fn Height(self: Self) ElementType {
+            return self.Y();
+        }
+
+        pub inline fn Depth(self: Self) ElementType {
+            return self.Z();
+        }
+
         pub inline fn FromV(v: Type) Self {
             return Self{ .v = v };
         }

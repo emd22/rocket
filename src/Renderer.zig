@@ -109,6 +109,14 @@ pub const Renderer = struct {
         // );
     }
 
+    pub fn Render(self: Self) void {
+        self.Renderer.BeginFrame(self.GraphicsPipeline);
+
+        c.vkCmdDraw(self.Renderer.GetFrame().CommandBuffer.CommandBuffer, 3, 1, 0, 0);
+
+        self.Renderer.FinishFrame(self.GraphicsPipeline);
+    }
+
     fn CreateWindow(self: *Self) void {
         const window_flags: c.SDL_WindowFlags = c.SDL_WINDOW_VULKAN;
 

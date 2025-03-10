@@ -1,11 +1,11 @@
 struct Input {
-    // float4 Position : SV_Position;
+    float4 Position : SV_Position;
 
     // float3 Normal : NORMAL;
     // float3 FragPos : POSITION;
 };
 
-float4 main(/*Input input*/) : SV_Target0 {
+float4 main(Input input) : SV_Target0 {
     // float3 norm = normalize(input.Normal);
     // float3 light_dir = normalize(float3(0, 5, 2) - input.FragPos);
 
