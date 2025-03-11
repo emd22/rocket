@@ -228,8 +228,6 @@ pub const Swapchain = struct {
 
     Initialized: bool = false,
 
-    FramesInFlight: u32 = 0,
-
     const Self = @This();
 
     pub fn Create(self: *Self, size: TVec2i) void {
@@ -245,7 +243,7 @@ pub const Swapchain = struct {
 
     pub fn GetNextImage(self: Swapchain, image_available: Semaphore) void {
         TryVk(
-            c.vkAcquireNextImageKHR(CurrentRenderer.GetDevice().Device, self.Swapchain, std.math.maxInt(u64), image_available.Get(), null, &CurrentRenderer.FrameNumber),
+            c.vkAcquireNextImageKHR(CurrentRenderer.GetDevice().Device, self.Swapchain, std.math.maxInt(u64), image_available.Get(), null, &CurrentRenderer.ImageIndex),
             "Could not acquire next frame image!",
         );
     }
@@ -347,8 +345,6 @@ pub const Swapchain = struct {
         if (capabilities.maxImageCount > 0 and image_count > capabilities.maxImageCount) {
             image_count = capabilities.maxImageCount;
         }
-
-        self.FramesInFlight = image_count;
 
         self.ImageFormat = device.GetBestSurfaceFormat();
 
@@ -469,6 +465,24 @@ pub const Framebuffer = struct {
 pub const FrameData = struct {
     CommandPool: CommandPool,
     CommandBuffer: CommandBuffer,
+
+    ImageAvailable: Semaphore,
+    RenderFinished: Semaphore,
+    InFlight: Fence,
+
+    pub fn CreateSynchro(self: *FrameData) void {
+        self.ImageAvailable.Create();
+        self.RenderFinished.Create();
+
+        self.InFlight.Create();
+    }
+
+    pub fn Destroy(self: *FrameData) void {
+        self.ImageAvailable.Destroy();
+        self.RenderFinished.Destroy();
+
+        self.InFlight.Destroy();
+    }
 };
 
 pub const Semaphore = struct {
@@ -568,16 +582,14 @@ pub const Renderer = struct {
 
     Device: ?Device = null,
 
-    ImageAvailable: Semaphore = Semaphore{},
-    RenderFinished: Semaphore = Semaphore{},
-
-    InFlight: Fence = Fence{},
-
     Frames: []FrameData = undefined,
     FrameNumber: u32 = 0,
-    FramesInFlight: u32 = 0,
+
+    ImageIndex: u32 = 0,
 
     const Self = @This();
+
+    const FRAMES_IN_FLIGHT = 2;
 
     pub inline fn GetDevice(self: Self) Device {
         if (self.Device == null) {
@@ -613,9 +625,7 @@ pub const Renderer = struct {
     pub fn InitFrames(self: *Self) void {
         Assert(self.GetDevice().QueueFamilies.Graphics != null);
 
-        self.FramesInFlight = self.Swapchain.FramesInFlight;
-
-        self.Frames = allocator.alloc(FrameData, self.FramesInFlight) catch {
+        self.Frames = allocator.alloc(FrameData, FRAMES_IN_FLIGHT) catch {
             Panic("Could not allocate frame data", null, .{});
         };
 
@@ -624,18 +634,20 @@ pub const Renderer = struct {
         for (0..self.Frames.len) |index| {
             self.Frames[index].CommandPool.Create(graphics_family);
             self.Frames[index].CommandBuffer.Create(&self.Frames[index].CommandPool);
+
+            self.Frames[index].CreateSynchro();
         }
     }
 
     pub inline fn GetFrameIndex(self: Self) u32 {
-        // return (self.FrameNumber);
-        return 0;
+        return (self.FrameNumber);
     }
 
     pub fn DestroyFrames(self: *Self) void {
         for (self.Frames) |*frame| {
             frame.*.CommandBuffer.Destroy();
             frame.*.CommandPool.Destroy();
+            frame.*.Destroy();
         }
     }
 
@@ -663,12 +675,6 @@ pub const Renderer = struct {
         self.Swapchain.Create(window_size);
 
         self.InitFrames();
-
-        // render semaphores
-        self.ImageAvailable.Create();
-        self.RenderFinished.Create();
-        // render fences
-        self.InFlight.Create();
 
         self.Initialized = true;
     }
@@ -704,13 +710,15 @@ pub const Renderer = struct {
     }
 
     pub fn BeginFrame(self: Renderer, pipeline: *GraphicsPipeline) void {
-        self.InFlight.WaitFor(.{});
-        self.InFlight.Reset();
+        var current_frame = self.GetFrame();
 
-        self.Swapchain.GetNextImage(self.ImageAvailable);
+        current_frame.InFlight.WaitFor(.{});
+        current_frame.InFlight.Reset();
+
+        self.Swapchain.GetNextImage(current_frame.ImageAvailable);
         Log.RenDebug("Frame number: {d}", .{self.FrameNumber});
 
-        var command_buffer = self.GetFrame().CommandBuffer;
+        var command_buffer = current_frame.CommandBuffer;
 
         command_buffer.Reset();
         command_buffer.Record();
@@ -739,14 +747,15 @@ pub const Renderer = struct {
 
     fn PresentFrame(self: Renderer) void {
         Assert(self.Swapchain.Initialized == true);
+
         const present_info = c.VkPresentInfoKHR{
             .sType = c.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &self.RenderFinished.Semaphore,
+            .pWaitSemaphores = &self.GetFrame().RenderFinished.Semaphore,
 
             .swapchainCount = 1,
             .pSwapchains = &self.Swapchain.Swapchain,
-            .pImageIndices = &self.FrameNumber,
+            .pImageIndices = &self.ImageIndex,
 
             .pResults = null,
         };
@@ -755,23 +764,25 @@ pub const Renderer = struct {
     }
 
     fn SubmitFrame(self: Renderer) void {
+        var frame = self.GetFrame();
+
         const wait_stages = [_]c.VkPipelineStageFlags{
             @intCast(c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT),
         };
         const submit_info = c.VkSubmitInfo{
             .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &self.ImageAvailable.Semaphore,
+            .pWaitSemaphores = &frame.ImageAvailable.Semaphore,
             .pWaitDstStageMask = &wait_stages,
             // command buffers
             .commandBufferCount = 1,
-            .pCommandBuffers = &self.GetFrame().CommandBuffer.CommandBuffer,
+            .pCommandBuffers = &frame.CommandBuffer.CommandBuffer,
             // signal semaphores
             .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &self.RenderFinished.Semaphore,
+            .pSignalSemaphores = &frame.RenderFinished.Semaphore,
         };
         // const fence = self.InFlight.Fence;
-        TryVk(c.vkQueueSubmit(self.GetDevice().GraphicsQueue, 1, &submit_info, self.InFlight.Fence), "Error submitting draw buffer");
+        TryVk(c.vkQueueSubmit(self.GetDevice().GraphicsQueue, 1, &submit_info, self.GetFrame().InFlight.Fence), "Error submitting draw buffer");
     }
 
     pub inline fn FinishFrame(self: *Renderer, pipeline: GraphicsPipeline) void {
@@ -782,6 +793,8 @@ pub const Renderer = struct {
         command_buffer.End();
         self.SubmitFrame();
         self.PresentFrame();
+
+        self.FrameNumber = (self.FrameNumber + 1) % FRAMES_IN_FLIGHT;
     }
 
     fn MakeInstanceExtensionList(self: *Self, requested_extensions: [][:0]const u8) std.ArrayList([*:0]const u8) {
@@ -974,14 +987,6 @@ pub const Renderer = struct {
 
         self.DestroyFrames();
         allocator.free(self.Frames);
-
-        // destroy synchro
-        {
-            self.ImageAvailable.Destroy();
-            self.RenderFinished.Destroy();
-
-            self.InFlight.Destroy();
-        }
 
         self.Initialized = false;
     }
@@ -1368,11 +1373,11 @@ pub const RenderPass = struct {
 
         const renderer = CurrentRenderer;
 
-        const clear_color = c.VkClearValue{ .color = .{ .float32 = @splat(1.0) } };
+        const clear_color = c.VkClearValue{ .color = .{ .float32 = @splat(0.0) } };
         const begin_info = c.VkRenderPassBeginInfo{
             .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             .renderPass = self.RenderPass,
-            .framebuffer = renderer.Swapchain.Framebuffers[renderer.GetFrameIndex()].Framebuffer,
+            .framebuffer = renderer.Swapchain.Framebuffers[renderer.ImageIndex].Framebuffer,
             .renderArea = .{
                 .extent = .{ .width = @intCast(extent.Width()), .height = @intCast(extent.Height()) },
                 .offset = .{ .x = 0, .y = 0 },
