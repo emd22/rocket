@@ -44,18 +44,20 @@ struct spvUnsafeArray
     }
 };
 
-constant spvUnsafeArray<float2, 3> _26 = spvUnsafeArray<float2, 3>({ float2(0.0, -0.5), float2(0.5), float2(-0.5, 0.5) });
+constant spvUnsafeArray<float2, 3> _19 = spvUnsafeArray<float2, 3>({ float2(0.0, -0.5), float2(0.5), float2(-0.5, 0.5) });
+constant spvUnsafeArray<float3, 3> _28 = spvUnsafeArray<float3, 3>({ float3(1.0, 0.0, 0.0), float3(0.0, 1.0, 0.0), float3(0.0, 0.0, 1.0) });
 
 struct main0_out
 {
-    float4 _entryPointOutput [[user(locn0)]];
+    float3 fragColor [[user(locn0)]];
     float4 gl_Position [[position]];
 };
 
 vertex main0_out main0(uint gl_VertexIndex [[vertex_id]])
 {
     main0_out out = {};
-    out._entryPointOutput = float4(_26[gl_VertexIndex], 0.0, 1.0);
+    out.gl_Position = float4(_19[int(gl_VertexIndex)], 0.0, 1.0);
+    out.fragColor = _28[int(gl_VertexIndex)];
     return out;
 }
 

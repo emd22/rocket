@@ -359,7 +359,7 @@ const sinfunc = @import("Math/SIMD.zig").fast_sincos_ps;
 const FType = @Vector(4, f32);
 const UType = @Vector(4, u32);
 
-const gltf = @import("Loader/Gltf.zig");
+// const gltf = @import("Loader/Gltf.zig");
 
 pub fn main() !void {
     errdefer FRenderer.Panic("Error in main (init)!", .{});
@@ -370,116 +370,116 @@ pub fn main() !void {
     Controls.Init();
     defer Controls.Destroy();
 
-    var model = gltf.GLTFModel{};
-    model.Load("./models/DamagedHelmet.glb");
+    // var model = gltf.GLTFModel{};
+    // model.Load("./models/DamagedHelmet.glb");
 
-    if (model.data == null) {
-        Log.Error("Could not load model!\n", .{});
-        return;
-    }
+    // if (model.data == null) {
+    //     Log.Error("Could not load model!\n", .{});
+    //     return;
+    // }
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+    // var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    // const allocator = gpa.allocator();
 
-    var raw_positions: []f32 = undefined;
+    // var raw_positions: []f32 = undefined;
 
-    var indices: []u32 = undefined;
-    var raw_normals: []f32 = undefined;
+    // var indices: []u32 = undefined;
+    // var raw_normals: []f32 = undefined;
 
-    for (0..model.data.?.meshes_count) |mesh_index| {
-        const mesh = model.data.?.meshes[mesh_index];
-        Log.Info("Mesh: {s}", .{mesh.name});
+    // for (0..model.data.?.meshes_count) |mesh_index| {
+    //     const mesh = model.data.?.meshes[mesh_index];
+    //     Log.Info("Mesh: {s}", .{mesh.name});
 
-        for (0..mesh.primitives_count) |prim_index| {
-            const primitive = &mesh.primitives[prim_index];
+    //     for (0..mesh.primitives_count) |prim_index| {
+    //         const primitive = &mesh.primitives[prim_index];
 
-            if (primitive.indices != null) {
-                indices = try allocator.alloc(u32, primitive.indices.*.count);
+    //         if (primitive.indices != null) {
+    //             indices = try allocator.alloc(u32, primitive.indices.*.count);
 
-                _ = c.cgltf_accessor_unpack_indices(primitive.indices, indices.ptr, @sizeOf(u32), primitive.indices.*.count);
+    //             _ = c.cgltf_accessor_unpack_indices(primitive.indices, indices.ptr, @sizeOf(u32), primitive.indices.*.count);
 
-                // const index_accessor = primitive.indices.*;
+    //             // const index_accessor = primitive.indices.*;
 
-                // const buffer_view = index_accessor.buffer_view;
-                // const buffer = buffer_view.*.buffer;
-                // const stride = index_accessor.stride;
-                // const component_type = index_accessor.component_type;
+    //             // const buffer_view = index_accessor.buffer_view;
+    //             // const buffer = buffer_view.*.buffer;
+    //             // const stride = index_accessor.stride;
+    //             // const component_type = index_accessor.component_type;
 
-                // for (indices, 0..) |*index, i| {
-                //     const offset = buffer_view.*.offset + index_accessor.offset + i * stride;
-                //     switch (component_type) {
-                //         c.cgltf_component_type_r_16u => {
-                //             const ptrv = @as(usize, @intFromPtr(buffer.*.data.?)) + offset;
-                //             const idx: *u16 = @ptrCast(@alignCast(@as(*u16, @ptrFromInt(ptrv))));
-                //             index.* = idx.*;
-                //         },
-                //         c.cgltf_component_type_r_32u => {
-                //             const ptrv = @as(usize, @intFromPtr(buffer.*.data.?)) + offset;
+    //             // for (indices, 0..) |*index, i| {
+    //             //     const offset = buffer_view.*.offset + index_accessor.offset + i * stride;
+    //             //     switch (component_type) {
+    //             //         c.cgltf_component_type_r_16u => {
+    //             //             const ptrv = @as(usize, @intFromPtr(buffer.*.data.?)) + offset;
+    //             //             const idx: *u16 = @ptrCast(@alignCast(@as(*u16, @ptrFromInt(ptrv))));
+    //             //             index.* = idx.*;
+    //             //         },
+    //             //         c.cgltf_component_type_r_32u => {
+    //             //             const ptrv = @as(usize, @intFromPtr(buffer.*.data.?)) + offset;
 
-                //             const idx: *u32 = @ptrCast(@alignCast(@as(*u16, @ptrFromInt(ptrv))));
-                //             index.* = idx.*;
-                //         },
-                //         else => {
-                //             std.debug.print("Unsupported index type!\n", .{});
-                //             return error.UnsupportedIndexType;
-                //         },
-                //     }
-                // }
-            }
+    //             //             const idx: *u32 = @ptrCast(@alignCast(@as(*u16, @ptrFromInt(ptrv))));
+    //             //             index.* = idx.*;
+    //             //         },
+    //             //         else => {
+    //             //             std.debug.print("Unsupported index type!\n", .{});
+    //             //             return error.UnsupportedIndexType;
+    //             //         },
+    //             //     }
+    //             // }
+    //         }
 
-            for (0..primitive.attributes_count) |attrib_index| {
-                const attribute = &primitive.attributes[attrib_index];
+    //         for (0..primitive.attributes_count) |attrib_index| {
+    //             const attribute = &primitive.attributes[attrib_index];
 
-                const data_size = c.cgltf_accessor_unpack_floats(attribute.data, null, 0);
-                std.debug.print("data size: {d}\n", .{data_size});
+    //             const data_size = c.cgltf_accessor_unpack_floats(attribute.data, null, 0);
+    //             std.debug.print("data size: {d}\n", .{data_size});
 
-                if (attribute.type == c.cgltf_attribute_type_position) {
-                    raw_positions = try allocator.alloc(f32, data_size);
-                    _ = c.cgltf_accessor_unpack_floats(attribute.data, raw_positions.ptr, data_size);
-                    // _ = c.cgltf_accessor_unpack_floats(attribute.data, &data, 3);
-                    // const vertex = Vertex{ .Pos = .{ data[0], data[1], data[2], 1 } };
-                    // std.debug.print("Size: {}\n", .{vertex.Pos});
-                    // try vertex_buffer.append(vertex);
-                } else if (attribute.type == c.cgltf_attribute_type_normal) {
-                    raw_normals = try allocator.alloc(f32, data_size);
-                    _ = c.cgltf_accessor_unpack_floats(attribute.data, raw_normals.ptr, data_size);
-                }
+    //             if (attribute.type == c.cgltf_attribute_type_position) {
+    //                 raw_positions = try allocator.alloc(f32, data_size);
+    //                 _ = c.cgltf_accessor_unpack_floats(attribute.data, raw_positions.ptr, data_size);
+    //                 // _ = c.cgltf_accessor_unpack_floats(attribute.data, &data, 3);
+    //                 // const vertex = Vertex{ .Pos = .{ data[0], data[1], data[2], 1 } };
+    //                 // std.debug.print("Size: {}\n", .{vertex.Pos});
+    //                 // try vertex_buffer.append(vertex);
+    //             } else if (attribute.type == c.cgltf_attribute_type_normal) {
+    //                 raw_normals = try allocator.alloc(f32, data_size);
+    //                 _ = c.cgltf_accessor_unpack_floats(attribute.data, raw_normals.ptr, data_size);
+    //             }
 
-                // if (attribute.type == )
-            }
-        }
-    }
+    //             // if (attribute.type == )
+    //         }
+    //     }
+    // }
 
-    var vertices: []Vertex = try allocator.alloc(Vertex, raw_positions.len / 3);
-    defer allocator.free(vertices);
+    // var vertices: []Vertex = try allocator.alloc(Vertex, raw_positions.len / 3);
+    // defer allocator.free(vertices);
 
-    var v_index: u32 = 0;
-    while (v_index < raw_positions.len) {
-        // std.debug.print("x: [{d}, {d}, {d}]\n", .{ raw_positions[v_index], raw_positions[v_index + 1], raw_positions[v_index + 2] });
-        vertices[v_index / 3] = Vertex{
-            .Position = .{
-                raw_positions[v_index],
-                raw_positions[v_index + 1],
-                raw_positions[v_index + 2],
-            },
-            .Normal = .{
-                raw_normals[v_index],
-                raw_normals[v_index + 1],
-                raw_normals[v_index + 2],
-            },
-        };
-        // Log.Info("V[{d}]: {}", .{ v_index / 3, vertices[v_index / 3].Pos });
-        v_index += 3;
-    }
-    allocator.free(raw_positions);
-    defer allocator.free(indices);
+    // var v_index: u32 = 0;
+    // while (v_index < raw_positions.len) {
+    //     // std.debug.print("x: [{d}, {d}, {d}]\n", .{ raw_positions[v_index], raw_positions[v_index + 1], raw_positions[v_index + 2] });
+    //     vertices[v_index / 3] = Vertex{
+    //         .Position = .{
+    //             raw_positions[v_index],
+    //             raw_positions[v_index + 1],
+    //             raw_positions[v_index + 2],
+    //         },
+    //         .Normal = .{
+    //             raw_normals[v_index],
+    //             raw_normals[v_index + 1],
+    //             raw_normals[v_index + 2],
+    //         },
+    //     };
+    //     // Log.Info("V[{d}]: {}", .{ v_index / 3, vertices[v_index / 3].Pos });
+    //     v_index += 3;
+    // }
+    // allocator.free(raw_positions);
+    // defer allocator.free(indices);
 
-    defer model.Destroy();
+    // defer model.Destroy();
 
-    const window_size = Renderer.WindowSize;
-    const aspect_ratio: f32 = @as(f32, @floatFromInt(window_size.X())) / @as(f32, @floatFromInt(window_size.Y()));
+    // const window_size = Renderer.WindowSize;
+    // const aspect_ratio: f32 = @as(f32, @floatFromInt(window_size.X())) / @as(f32, @floatFromInt(window_size.Y()));
 
-    Player.Camera.UpdateProjectionMatrix(.{ .AspectRatio = aspect_ratio });
+    // Player.Camera.UpdateProjectionMatrix(.{ .AspectRatio = aspect_ratio });
 
     // var test_mesh_verts = [_]Vertex{
     //     .{ .Pos = .{ -1, -1, 0 } },
@@ -516,7 +516,6 @@ pub fn main() !void {
     // };
 
     // test_mesh.UploadToGPU(vertices, indices);
-    test_mesh.UploadToGPU(vertices, indices);
 
     while (running) {
         ProcessEvents();

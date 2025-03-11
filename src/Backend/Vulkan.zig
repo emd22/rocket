@@ -186,8 +186,6 @@ pub const CommandBuffer = struct {
             .pInheritanceInfo = null,
         };
 
-        Log.Info("Start recording command buffer", .{});
-
         const status = c.vkBeginCommandBuffer(self.CommandBuffer, &begin_info);
         if (status != c.VK_SUCCESS) {
             Panic("Could not begin recording command buffer", status, .{});
@@ -273,10 +271,10 @@ pub const Swapchain = struct {
                 .viewType = c.VK_IMAGE_VIEW_TYPE_2D,
                 .format = self.ImageFormat.format,
                 .components = .{
-                    .a = c.VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .b = c.VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .g = c.VK_COMPONENT_SWIZZLE_IDENTITY,
                     .r = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .g = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .b = c.VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .a = c.VK_COMPONENT_SWIZZLE_IDENTITY,
                 },
                 .subresourceRange = .{
                     .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
@@ -368,17 +366,18 @@ pub const Swapchain = struct {
             .oldSwapchain = null,
         };
 
-        const indices = [_]u32{ device.QueueFamilies.Graphics.?, device.QueueFamilies.Present.? };
+        // const indices = [_]u32{ device.QueueFamilies.Graphics.?, device.QueueFamilies.Present.? };
 
         if (device.QueueFamilies.Graphics == device.QueueFamilies.Present) {
             create_info.imageSharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
             create_info.queueFamilyIndexCount = 0;
             create_info.pQueueFamilyIndices = null;
-        } else {
-            create_info.imageSharingMode = c.VK_SHARING_MODE_CONCURRENT;
-            create_info.queueFamilyIndexCount = 2;
-            create_info.pQueueFamilyIndices = &indices;
         }
+        // else {
+        //     create_info.imageSharingMode = c.VK_SHARING_MODE_CONCURRENT;
+        //     create_info.queueFamilyIndexCount = 2;
+        //     create_info.pQueueFamilyIndices = &indices;
+        // }
 
         result = c.vkCreateSwapchainKHR(device.Device, &create_info, VulkanAllocator, &self.Swapchain);
         if (result != c.VK_SUCCESS) {
@@ -396,10 +395,12 @@ pub fn SetupDebugMessenger() callconv(.c) void {
         .sType = c.VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
         .messageSeverity = c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
             c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-            c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+            c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
+            c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT,
         .messageType = c.VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
             c.VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT |
-            c.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT,
+            c.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+            c.VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
         .pfnUserCallback = &DebugMessageCallback,
         .pUserData = null,
         .pNext = null,
@@ -716,7 +717,6 @@ pub const Renderer = struct {
         current_frame.InFlight.Reset();
 
         self.Swapchain.GetNextImage(current_frame.ImageAvailable);
-        Log.RenDebug("Frame number: {d}", .{self.FrameNumber});
 
         var command_buffer = current_frame.CommandBuffer;
 
@@ -745,24 +745,6 @@ pub const Renderer = struct {
         c.vkCmdSetScissor(command_buffer.CommandBuffer, 0, 1, &scissor);
     }
 
-    fn PresentFrame(self: Renderer) void {
-        Assert(self.Swapchain.Initialized == true);
-
-        const present_info = c.VkPresentInfoKHR{
-            .sType = c.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &self.GetFrame().RenderFinished.Semaphore,
-
-            .swapchainCount = 1,
-            .pSwapchains = &self.Swapchain.Swapchain,
-            .pImageIndices = &self.ImageIndex,
-
-            .pResults = null,
-        };
-
-        TryVk(c.vkQueuePresentKHR(self.GetDevice().PresentQueue, &present_info), "Could not present graphics queue");
-    }
-
     fn SubmitFrame(self: Renderer) void {
         var frame = self.GetFrame();
 
@@ -785,12 +767,31 @@ pub const Renderer = struct {
         TryVk(c.vkQueueSubmit(self.GetDevice().GraphicsQueue, 1, &submit_info, self.GetFrame().InFlight.Fence), "Error submitting draw buffer");
     }
 
+    fn PresentFrame(self: Renderer) void {
+        Assert(self.Swapchain.Initialized == true);
+
+        const present_info = c.VkPresentInfoKHR{
+            .sType = c.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &self.GetFrame().RenderFinished.Semaphore,
+
+            .swapchainCount = 1,
+            .pSwapchains = &self.Swapchain.Swapchain,
+            .pImageIndices = &self.ImageIndex,
+
+            .pResults = null,
+        };
+
+        TryVk(c.vkQueuePresentKHR(self.GetDevice().PresentQueue, &present_info), "Could not present graphics queue");
+    }
+
     pub inline fn FinishFrame(self: *Renderer, pipeline: GraphicsPipeline) void {
         var command_buffer = self.GetFrame().CommandBuffer;
 
         pipeline.RenderPass.End();
 
         command_buffer.End();
+
         self.SubmitFrame();
         self.PresentFrame();
 
@@ -920,7 +921,8 @@ pub const Renderer = struct {
         PrintValidationLayers();
 
         const requested_validation_layers = [_][*:0]const u8{
-            "VK_LAYER_KHRONOS_validation",
+            // "VK_LAYER_KHRONOS_validation",
+            // "VK_LAYER_KHRONOS_shader_object",
         };
 
         const instance_info = c.VkInstanceCreateInfo{
@@ -1296,9 +1298,11 @@ pub const ShaderList = struct {
 
         if (self.Vertex != null) {
             try shader_stages.append(.{ .Shader = self.Vertex, .ShaderType = .Vertex });
+            Log.RenInfo("Added vertex shader", .{});
         }
         if (self.Fragment != null) {
             try shader_stages.append(.{ .Shader = self.Fragment, .ShaderType = .Fragment });
+            Log.RenInfo("Added fragment shader", .{});
         }
 
         return shader_stages.items;
@@ -1367,13 +1371,11 @@ pub const RenderPass = struct {
             Panic("Renderpass not previously created", null, .{});
         }
 
-        Log.Info("Start render pass", .{});
-
         const extent = CurrentRenderer.Swapchain.Extent;
 
         const renderer = CurrentRenderer;
 
-        const clear_color = c.VkClearValue{ .color = .{ .float32 = @splat(0.0) } };
+        const clear_color = c.VkClearValue{ .color = .{ .float32 = @splat(1.0) } };
         const begin_info = c.VkRenderPassBeginInfo{
             .sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             .renderPass = self.RenderPass,
@@ -1440,6 +1442,7 @@ pub const GraphicsPipeline = struct {
                 .pName = "main",
                 .pSpecializationInfo = &specialization_info,
             };
+            Log.RenDebug("Added shader (Vertex: {s}) (VertexBit: {s})", .{ Log.YesNo(stage.ShaderType == .Vertex), Log.YesNo(info.stage == c.VK_SHADER_STAGE_VERTEX_BIT) });
             try shader_create_info.append(info);
         }
 
@@ -1473,22 +1476,22 @@ pub const GraphicsPipeline = struct {
         const viewport = c.VkViewport{
             .x = 0,
             .y = 0,
-            .width = @floatFromInt(extent.X()),
-            .height = @floatFromInt(extent.Y()),
+            .width = @floatFromInt(extent.Width()),
+            .height = @floatFromInt(extent.Height()),
             .minDepth = 0.0,
             .maxDepth = 1.0,
         };
 
         const scissor = c.VkRect2D{
             .offset = .{ .x = 0, .y = 0 },
-            .extent = .{ .width = @intCast(extent.X()), .height = @intCast(extent.Y()) },
+            .extent = .{ .width = @intCast(extent.Width()), .height = @intCast(extent.Height()) },
         };
 
         const viewport_state = c.VkPipelineViewportStateCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
             .viewportCount = 1,
-            .scissorCount = 1,
             .pViewports = &viewport,
+            .scissorCount = 1,
             .pScissors = &scissor,
         };
 
@@ -1515,6 +1518,7 @@ pub const GraphicsPipeline = struct {
             .pSampleMask = null,
             .alphaToCoverageEnable = 0,
             .alphaToOneEnable = 0,
+            .pNext = null,
         };
 
         const color_blend_attachment = c.VkPipelineColorBlendAttachmentState{
@@ -1537,6 +1541,7 @@ pub const GraphicsPipeline = struct {
             .attachmentCount = 1,
             .pAttachments = &color_blend_attachment,
             .blendConstants = @splat(0),
+            .pNext = null,
         };
 
         self.CreateLayout();
@@ -1556,6 +1561,7 @@ pub const GraphicsPipeline = struct {
             .pMultisampleState = &multisampling,
             .pDepthStencilState = null,
             .pColorBlendState = &color_blend_state_info,
+
             .pDynamicState = &dynamic_state_info,
             /////////////////////////////////////////////
             .layout = self.Layout,
@@ -1563,8 +1569,10 @@ pub const GraphicsPipeline = struct {
             .renderPass = self.RenderPass.RenderPass,
             .subpass = 0,
             ///////////////////////////////////
-            .basePipelineIndex = -1,
-            .basePipelineHandle = @ptrCast(c.VK_NULL_HANDLE),
+            .basePipelineHandle = null,
+
+            .pTessellationState = null,
+            .pNext = null,
         };
 
         const result = c.vkCreateGraphicsPipelines(CurrentRenderer.GetDevice().Device, null, 1, &pipeline_info, VulkanAllocator, &self.Pipeline);
