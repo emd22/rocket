@@ -970,6 +970,7 @@ pub const Renderer = struct {
         self.WaitForGPUIdle();
 
         self.Swapchain.Destroy();
+        self.DestroyFrames();
 
         if (self.Surface) |surface| {
             c.vkDestroySurfaceKHR(self.Instance, surface, VulkanAllocator);
@@ -985,7 +986,6 @@ pub const Renderer = struct {
             allocator.free(extensions);
         }
 
-        self.DestroyFrames();
         allocator.free(self.Frames);
 
         self.Initialized = false;
@@ -1595,6 +1595,8 @@ pub const GraphicsPipeline = struct {
 
     pub fn Destroy(self: *GraphicsPipeline) void {
         const device = CurrentRenderer.GetDevice().Device;
+
+        CurrentRenderer.WaitForGPUIdle();
 
         self.RenderPass.Destroy();
 
