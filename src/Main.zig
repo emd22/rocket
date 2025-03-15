@@ -361,6 +361,9 @@ const UType = @Vector(4, u32);
 
 // const gltf = @import("Loader/Gltf.zig");
 
+const signal = @import("signal");
+fn SetupSignals() void {}
+
 pub fn main() !void {
     errdefer FRenderer.Panic("Error in main (init)!", .{});
 

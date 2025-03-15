@@ -1,21 +1,32 @@
 const std = @import("std");
 
-const Log = @import("../Log.zig");
 const c = @import("../CLibs.zig").c;
 
-pub const VULKAN_DEBUG = true;
+const RenderError = @import("Vulkan/Error.zig").RenderError;
+const FUtil = @import("Vulkan/Util.zig");
 
-const VulkanAllocator: [*c]c.VkAllocationCallbacks = null;
+// Utility imports
+const Panic = FUtil.Panic;
+const TryVk = FUtil.TryVk;
+const VULKAN_ALLOCATOR = FUtil.VULKAN_ALLOCATOR;
+const VULKAN_DEBUG = FUtil.VULKAN_DEBUG;
+
+const Log = @import("../Log.zig");
+const Device = @import("Vulkan/Device.zig").Device;
+
+//////////////////////////////////////////
+// Global Variables
+//////////////////////////////////////////
 
 /// The currently selected Vulkan Renderer
 var CurrentRenderer: *Renderer = undefined;
 
-pub const RenderError = error{
-    ExtensionNotAvailable,
-};
-
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 var allocator = gpa.allocator();
+
+//////////////////////////////////////////
+// Public Getter/Utility functions
+//////////////////////////////////////////
 
 /// Retrieves the currently selected Renderer
 pub fn GetCurrentRenderer() *Renderer {
@@ -39,94 +50,6 @@ pub fn AssertRendererExists(options: struct { CheckInitialized: bool = true }) v
     }
 }
 
-inline fn TryVk(status: c.VkResult, comptime on_error: []const u8) void {
-    if (status == c.VK_SUCCESS) {
-        return;
-    }
-    Panic(on_error, status, .{});
-}
-
-/// Gets the handle for a function in a Vulkan extension.
-///
-/// ```
-/// // the function prototype
-/// const prot: type = *const fn (c.VkInstance, i32) callconv(.c) void;
-/// const func = GetExtensionFunc(prot, "vkSomeFuncEXT");
-///
-/// // call the retrieved handle
-/// func(instance, 10);
-///
-/// ```
-pub inline fn GetExtensionFunc(comptime FuncProt: type, name: []const u8) RenderError!FuncProt {
-    const raw_ptr = c.vkGetInstanceProcAddr(CurrentRenderer.Instance, name.ptr);
-
-    if (raw_ptr) |funcptr| {
-        return @as(FuncProt, @ptrCast(funcptr));
-    }
-
-    Log.RenError("Extension '{s}' not present", .{name});
-    return RenderError.ExtensionNotAvailable;
-}
-
-fn CreateDebugUtilsMessengerEXT(
-    instance: c.VkInstance,
-    pCreateInfo: [*c]const c.VkDebugUtilsMessengerCreateInfoEXT,
-    pAllocator: [*c]const c.VkAllocationCallbacks,
-    pDebugMessenger: [*c]c.VkDebugUtilsMessengerEXT,
-) callconv(.c) c.VkResult {
-    const prot: type = *const fn (c.VkInstance, [*c]const c.VkDebugUtilsMessengerCreateInfoEXT, [*c]const c.VkAllocationCallbacks, [*c]c.VkDebugUtilsMessengerEXT) callconv(.c) c.VkResult;
-
-    const function = GetExtensionFunc(prot, "vkCreateDebugUtilsMessengerEXT") catch {
-        return c.VK_ERROR_EXTENSION_NOT_PRESENT;
-    };
-
-    return function(instance, pCreateInfo, pAllocator, pDebugMessenger);
-}
-
-fn DestroyDebugUtilsMessengerEXT(
-    instance: c.VkInstance,
-    messenger: c.VkDebugUtilsMessengerEXT,
-    pAllocator: [*c]const c.VkAllocationCallbacks,
-) callconv(.c) void {
-    const prot: type = *const fn (c.VkInstance, messenger: c.VkDebugUtilsMessengerEXT, pAllocator: [*c]const c.VkAllocationCallbacks) callconv(.c) void;
-
-    const function = GetExtensionFunc(prot, "vkDestroyDebugUtilsMessengerEXT") catch {
-        Log.Warn("Debug Utils extension not present, ignoring DestroyDebugUtilsMessengerEXT...", .{});
-        return;
-    };
-
-    return function(instance, messenger, pAllocator);
-}
-
-// since this only is used in SetupDebugMessager(which is only compiled if VULKAN_DEBUG is true),
-// this function will be skipped in compilation even if the extension types do not exist, as long as
-// VULKAN_DEBUG is false.
-fn DebugMessageCallback(
-    message_severity: c_uint,
-    message_type: c.VkDebugUtilsMessageTypeFlagsEXT,
-    callback_data: [*c]const c.VkDebugUtilsMessengerCallbackDataEXT,
-    user_data: ?*anyopaque,
-) callconv(.C) u32 {
-    const fmt = "VkValidator: {s}";
-
-    _ = message_type;
-    _ = user_data;
-
-    const message = callback_data.*.pMessage;
-
-    if ((message_severity & c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) == 0) {
-        Log.RenInfo(fmt, .{message});
-    } else if ((message_severity & c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) == 0) {
-        Log.RenWarn(fmt, .{message});
-    } else if ((message_severity & c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) == 0) {
-        Log.RenError(fmt, .{message});
-    } else {
-        Log.RenDebug(fmt, .{message});
-    }
-
-    return 0;
-}
-
 pub const CommandPool = struct {
     CommandPool: c.VkCommandPool = null,
 
@@ -137,14 +60,14 @@ pub const CommandPool = struct {
             .flags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
         };
 
-        const status = c.vkCreateCommandPool(CurrentRenderer.GetDevice().Device, &pool_info, VulkanAllocator, &self.CommandPool);
+        const status = c.vkCreateCommandPool(CurrentRenderer.GetDevice().Device, &pool_info, VULKAN_ALLOCATOR, &self.CommandPool);
         if (status != c.VK_SUCCESS) {
             Panic("Could not create command pool!", null, .{});
         }
     }
 
     pub fn Destroy(self: CommandPool) void {
-        c.vkDestroyCommandPool(CurrentRenderer.GetDevice().Device, self.CommandPool, VulkanAllocator);
+        c.vkDestroyCommandPool(CurrentRenderer.GetDevice().Device, self.CommandPool, VULKAN_ALLOCATOR);
     }
 };
 
@@ -226,6 +149,8 @@ pub const Swapchain = struct {
 
     Initialized: bool = false,
 
+    Pipeline: ?GraphicsPipeline = null,
+
     const Self = @This();
 
     pub fn Create(self: *Self, size: TVec2i) void {
@@ -239,11 +164,48 @@ pub const Swapchain = struct {
         self.Initialized = true;
     }
 
-    pub fn GetNextImage(self: Swapchain, image_available: Semaphore) void {
-        TryVk(
-            c.vkAcquireNextImageKHR(CurrentRenderer.GetDevice().Device, self.Swapchain, std.math.maxInt(u64), image_available.Get(), null, &CurrentRenderer.ImageIndex),
-            "Could not acquire next frame image!",
-        );
+    fn GetWindowSize() TVec2i {
+        var x: i32 = 0;
+        var y: i32 = 0;
+
+        if (CurrentRenderer.Window == null or c.SDL_GetWindowSize(CurrentRenderer.Window.?, &x, &y) == false) {
+            Log.Error("Could not retreive window size from SDL (err: {s})", .{c.SDL_GetError()});
+            return TVec2i{ .v = .{ 0, 0 } };
+        }
+        return TVec2i{ .v = .{ x, y } };
+    }
+
+    pub fn Rebuild(self: *Swapchain, graphics_pipeline: GraphicsPipeline) void {
+        // wait until the previous frames have been processed and presented
+        CurrentRenderer.WaitForGPUIdle();
+
+        self.Extent = GetWindowSize();
+
+        const device = CurrentRenderer.GetDevice().Device;
+
+        // free our old swapchain and framebuffers
+        self.DestroyFramebuffersAndImageViews(device);
+        self.DestroyInternalSwapchain(device);
+
+        // recreate swapchain and get the new images
+        self.CreateSwapchain(self.Extent);
+        self.CreateSwapchainImages();
+
+        // new resized framebuffers and views
+        self.CreateImageViews();
+        self.CreateSwapchainFramebuffers(graphics_pipeline);
+    }
+
+    pub fn GetNextImage(self: *Swapchain, image_available: Semaphore) RenderError!void {
+        const result = c.vkAcquireNextImageKHR(CurrentRenderer.GetDevice().Device, self.Swapchain, std.math.maxInt(u64), image_available.Get(), null, &CurrentRenderer.ImageIndex);
+
+        if (result == c.VK_SUCCESS) {} // ignore
+        else if (result == c.VK_ERROR_OUT_OF_DATE_KHR or result == c.VK_SUBOPTIMAL_KHR) {
+            self.Rebuild(self.Pipeline.?);
+            return RenderError.GraphicsOutOfDate;
+        } else {
+            Log.Error("Error getting next swapchain image! (err: {s})", .{FUtil.VkResultStr(result)});
+        }
     }
 
     pub fn CreateSwapchainFramebuffers(self: *Swapchain, graphics_pipeline: GraphicsPipeline) void {
@@ -257,6 +219,8 @@ pub const Swapchain = struct {
 
             self.Framebuffers[index].Create(&views, graphics_pipeline, self.Extent);
         }
+
+        self.Pipeline = graphics_pipeline;
     }
 
     fn CreateImageViews(self: *Swapchain) void {
@@ -292,17 +256,27 @@ pub const Swapchain = struct {
         }
     }
 
+    inline fn DestroyFramebuffersAndImageViews(self: *Self, device: c.VkDevice) void {
+        for (self.ImageViews, 0..) |view, index| {
+            self.Framebuffers[index].Destroy();
+            c.vkDestroyImageView(device, view, VULKAN_ALLOCATOR);
+        }
+        allocator.free(self.Framebuffers);
+        allocator.free(self.ImageViews);
+    }
+
+    inline fn DestroyInternalSwapchain(self: *Self, device: c.VkDevice) void {
+        c.vkDestroySwapchainKHR(device, self.Swapchain, VULKAN_ALLOCATOR);
+    }
+
     pub fn Destroy(self: *Self) void {
         const device = CurrentRenderer.GetDevice().Device;
 
-        for (self.ImageViews, 0..) |view, index| {
-            self.Framebuffers[index].Destroy();
-            c.vkDestroyImageView(device, view, VulkanAllocator);
-        }
+        self.DestroyFramebuffersAndImageViews(device);
 
-        allocator.free(self.ImageViews);
         allocator.free(self.Images);
-        c.vkDestroySwapchainKHR(device, self.Swapchain, VulkanAllocator);
+
+        self.DestroyInternalSwapchain(device);
 
         self.Initialized = false;
     }
@@ -379,46 +353,12 @@ pub const Swapchain = struct {
         //     create_info.pQueueFamilyIndices = &indices;
         // }
 
-        result = c.vkCreateSwapchainKHR(device.Device, &create_info, VulkanAllocator, &self.Swapchain);
+        result = c.vkCreateSwapchainKHR(device.Device, &create_info, VULKAN_ALLOCATOR, &self.Swapchain);
         if (result != c.VK_SUCCESS) {
             Panic("Could not create swapchain", result, .{});
         }
     }
 };
-
-pub fn SetupDebugMessenger() callconv(.c) void {
-    if (comptime VULKAN_DEBUG == false) {
-        return;
-    }
-
-    const create_info = c.VkDebugUtilsMessengerCreateInfoEXT{
-        .sType = c.VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-        .messageSeverity = c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-            c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-            c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
-            c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT,
-        .messageType = c.VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-            c.VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT |
-            c.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-            c.VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
-        .pfnUserCallback = &DebugMessageCallback,
-        .pUserData = null,
-        .pNext = null,
-        .flags = 0,
-    };
-
-    const result = CreateDebugUtilsMessengerEXT(
-        CurrentRenderer.Instance,
-        &create_info,
-        VulkanAllocator,
-        &CurrentRenderer.DebugMessenger,
-    );
-
-    if (result != c.VK_SUCCESS) {
-        // TODO: not panic worthy? keep going if we can.
-        Panic("Failed to create Vulkan debug messenger!", result, .{});
-    }
-}
 
 /// Prints the currently available validation layers.
 fn PrintValidationLayers() void {
@@ -450,7 +390,7 @@ pub const Framebuffer = struct {
 
         const device = GetCurrentRenderer().GetDevice().Device;
 
-        const result = c.vkCreateFramebuffer(device, &create_info, VulkanAllocator, &self.Framebuffer);
+        const result = c.vkCreateFramebuffer(device, &create_info, VULKAN_ALLOCATOR, &self.Framebuffer);
         if (result != c.VK_SUCCESS) {
             Panic("Failed to create framebuffer", result, .{});
         }
@@ -459,7 +399,7 @@ pub const Framebuffer = struct {
     pub fn Destroy(self: *Framebuffer) void {
         const device = CurrentRenderer.GetDevice().Device;
 
-        c.vkDestroyFramebuffer(device, self.Framebuffer, VulkanAllocator);
+        c.vkDestroyFramebuffer(device, self.Framebuffer, VULKAN_ALLOCATOR);
     }
 };
 
@@ -499,7 +439,7 @@ pub const Semaphore = struct {
         const renderer = GetCurrentRenderer();
 
         TryVk(
-            c.vkCreateSemaphore(renderer.GetDevice().Device, &create_info, VulkanAllocator, &self.Semaphore),
+            c.vkCreateSemaphore(renderer.GetDevice().Device, &create_info, VULKAN_ALLOCATOR, &self.Semaphore),
             "Could not create semaphore!",
         );
     }
@@ -509,7 +449,7 @@ pub const Semaphore = struct {
     }
 
     pub fn Destroy(self: *Semaphore) void {
-        c.vkDestroySemaphore(GetCurrentRenderer().GetDevice().Get(), self.Semaphore, VulkanAllocator);
+        c.vkDestroySemaphore(GetCurrentRenderer().GetDevice().Get(), self.Semaphore, VULKAN_ALLOCATOR);
     }
 };
 
@@ -526,7 +466,7 @@ pub const Fence = struct {
         const renderer = GetCurrentRenderer();
 
         TryVk(
-            c.vkCreateFence(renderer.GetDevice().Get(), &create_info, VulkanAllocator, &self.Fence),
+            c.vkCreateFence(renderer.GetDevice().Get(), &create_info, VULKAN_ALLOCATOR, &self.Fence),
             "Could not create fence!",
         );
     }
@@ -560,7 +500,7 @@ pub const Fence = struct {
     }
 
     pub fn Destroy(self: Fence) void {
-        c.vkDestroyFence(GetCurrentRenderer().GetDevice().Get(), self.Fence, VulkanAllocator);
+        c.vkDestroyFence(GetCurrentRenderer().GetDevice().Get(), self.Fence, VULKAN_ALLOCATOR);
     }
 };
 
@@ -576,7 +516,7 @@ pub const Renderer = struct {
     Instance: c.VkInstance = undefined,
     AvailableExtensions: ?[]c.VkExtensionProperties = null,
 
-    DebugMessenger: c.VkDebugUtilsMessengerEXT = undefined,
+    DebugMessenger: c.VkDebugUtilsMessengerEXT = null,
 
     Surface: c.VkSurfaceKHR = null,
     Swapchain: Swapchain = Swapchain{},
@@ -585,6 +525,8 @@ pub const Renderer = struct {
 
     Frames: []FrameData = undefined,
     FrameNumber: u32 = 0,
+
+    Window: ?*c.SDL_Window = null,
 
     ImageIndex: u32 = 0,
 
@@ -710,13 +652,22 @@ pub const Renderer = struct {
         }
     }
 
-    pub fn BeginFrame(self: Renderer, pipeline: *GraphicsPipeline) void {
+    /// Begins building the next frame and starts recording to the frame's command buffer.
+    ///
+    /// Returns `RenderError.GraphicsOutOfDate` when the current swapchain or present queue
+    /// is out of date from window events or driver notices. This should be handled by the
+    /// caller by skipping the current frame. The swapchain is rebuilt internally.
+    pub fn BeginFrame(self: *Renderer, pipeline: *GraphicsPipeline) RenderError!void {
         var current_frame = self.GetFrame();
 
         current_frame.InFlight.WaitFor(.{});
-        current_frame.InFlight.Reset();
 
-        self.Swapchain.GetNextImage(current_frame.ImageAvailable);
+        // if we cannot get the next frame(normally frame out of date), return early with
+        // a GraphicsOutOfDate error. This should be handled by the Renderer's Render function
+        // to skip the current frame.
+        try self.Swapchain.GetNextImage(current_frame.ImageAvailable);
+
+        current_frame.InFlight.Reset();
 
         var command_buffer = current_frame.CommandBuffer;
 
@@ -745,6 +696,7 @@ pub const Renderer = struct {
         c.vkCmdSetScissor(command_buffer.CommandBuffer, 0, 1, &scissor);
     }
 
+    /// Submits the GraphicsQueue to the in-progress frame to be presented.
     fn SubmitFrame(self: Renderer) void {
         var frame = self.GetFrame();
 
@@ -767,7 +719,8 @@ pub const Renderer = struct {
         TryVk(c.vkQueueSubmit(self.GetDevice().GraphicsQueue, 1, &submit_info, self.GetFrame().InFlight.Fence), "Error submitting draw buffer");
     }
 
-    fn PresentFrame(self: Renderer) void {
+    /// Presents the submitted graphics queue.
+    fn PresentFrame(self: *Renderer) void {
         Assert(self.Swapchain.Initialized == true);
 
         const present_info = c.VkPresentInfoKHR{
@@ -782,7 +735,14 @@ pub const Renderer = struct {
             .pResults = null,
         };
 
-        TryVk(c.vkQueuePresentKHR(self.GetDevice().PresentQueue, &present_info), "Could not present graphics queue");
+        const status = c.vkQueuePresentKHR(self.GetDevice().PresentQueue, &present_info);
+
+        if (status == c.VK_SUCCESS) {} // ignore
+        else if (status == c.VK_ERROR_OUT_OF_DATE_KHR or status == c.VK_SUBOPTIMAL_KHR) {
+            self.Swapchain.Rebuild(self.Swapchain.Pipeline.?);
+        } else {
+            Log.Error("Error submitting present queue (err: {s})", .{FUtil.VkResultStr(status)});
+        }
     }
 
     pub inline fn FinishFrame(self: *Renderer, pipeline: GraphicsPipeline) void {
@@ -935,7 +895,7 @@ pub const Renderer = struct {
             .flags = c.VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR,
         };
 
-        const result = c.vkCreateInstance(&instance_info, VulkanAllocator, &self.Instance);
+        const result = c.vkCreateInstance(&instance_info, VULKAN_ALLOCATOR, &self.Instance);
 
         if (result != c.VK_SUCCESS) {
             Panic("Error creating Vulkan instance", result, .{});
@@ -943,7 +903,10 @@ pub const Renderer = struct {
 
         Log.RenInfo("Successfully created instance!", .{});
 
-        SetupDebugMessenger();
+        self.DebugMessenger = FUtil.CreateDebugMessenger(self.Instance) catch blk: {
+            Log.RenError("Error creating debug messenger", .{});
+            break :blk null;
+        };
     }
 
     pub fn SelectDevice(self: *Self, device: Device) void {
@@ -951,12 +914,14 @@ pub const Renderer = struct {
     }
 
     pub fn AttachToWindow(self: *Self, window: *c.SDL_Window) void {
-        const success = c.SDL_Vulkan_CreateSurface(window, self.Instance, VulkanAllocator, &self.Surface);
+        const success = c.SDL_Vulkan_CreateSurface(window, self.Instance, VULKAN_ALLOCATOR, &self.Surface);
 
         if (!success) {
             Log.RenFatal("Could not attach Vulkan instance to window! [SDLError: {s}]\n", .{c.SDL_GetError()});
             @panic("Renderer error");
         }
+
+        self.Window = window;
     }
 
     pub inline fn WaitForGPUIdle(self: Renderer) void {
@@ -975,15 +940,15 @@ pub const Renderer = struct {
         self.DestroyFrames();
 
         if (self.Surface) |surface| {
-            c.vkDestroySurfaceKHR(self.Instance, surface, VulkanAllocator);
+            c.vkDestroySurfaceKHR(self.Instance, surface, VULKAN_ALLOCATOR);
         }
         self.GetDevice().Destroy();
 
         if (self.DebugMessenger != null) {
-            DestroyDebugUtilsMessengerEXT(self.Instance, self.DebugMessenger, VulkanAllocator);
+            FUtil.DestroyDebugMessenger(self.Instance, self.DebugMessenger);
         }
 
-        c.vkDestroyInstance(self.Instance, VulkanAllocator);
+        c.vkDestroyInstance(self.Instance, VULKAN_ALLOCATOR);
         if (self.AvailableExtensions) |extensions| {
             allocator.free(extensions);
         }
@@ -991,263 +956,6 @@ pub const Renderer = struct {
         allocator.free(self.Frames);
 
         self.Initialized = false;
-    }
-};
-
-pub const QueueFamilies = struct {
-    RawFamilies: ?[]c.VkQueueFamilyProperties = null,
-
-    Graphics: ?u32 = null,
-    Present: ?u32 = null,
-
-    pub fn GetQueueFamilies(self: *QueueFamilies, device: *Device) []c.VkQueueFamilyProperties {
-        if (self.QueueFamilies == null) {
-            self.FindQueueFamilies(device);
-        }
-
-        return self.QueueFamilies.?;
-    }
-
-    pub fn FindQueueFamilies(self: *QueueFamilies, device: *Device) void {
-        errdefer @panic("Cannot get queue families");
-
-        var family_count: u32 = 0;
-
-        c.vkGetPhysicalDeviceQueueFamilyProperties(device.Physical, &family_count, null);
-
-        if (self.RawFamilies == null) {
-            self.RawFamilies = try allocator.alloc(c.VkQueueFamilyProperties, family_count);
-        }
-
-        c.vkGetPhysicalDeviceQueueFamilyProperties(device.Physical.?, &family_count, self.RawFamilies.?.ptr);
-
-        Log.RenInfo("Amount of queue families: {d}", .{self.RawFamilies.?.len});
-
-        for (self.RawFamilies.?, 0..) |family, index| {
-            if (self.Present != null and self.Graphics != null) {
-                break;
-            }
-
-            if (family.queueCount == 0) {
-                continue;
-            }
-
-            {
-                // check for a graphics family
-                if ((family.queueFlags & c.VK_QUEUE_GRAPHICS_BIT) == 1) {
-                    self.Graphics = @intCast(index);
-                }
-            }
-            {
-                // check for a presentation family
-                var present_support: u32 = 0;
-
-                const result = c.vkGetPhysicalDeviceSurfaceSupportKHR(
-                    device.Physical,
-                    @as(u32, @intCast(index)),
-                    CurrentRenderer.Surface,
-                    &present_support,
-                );
-
-                if (result != c.VK_SUCCESS) {
-                    Panic("Could not get physical device surface support(presentation queue family)", result, .{});
-                }
-
-                Log.Info("Present support: {d}", .{present_support});
-
-                if (present_support > 0) {
-                    self.Present = @intCast(index);
-                }
-            }
-        }
-    }
-
-    pub fn Destroy(self: QueueFamilies) void {
-        if (self.RawFamilies != null) {
-            allocator.free(self.RawFamilies.?);
-        }
-    }
-};
-
-pub const Device = struct {
-    Physical: c.VkPhysicalDevice = null,
-    Device: c.VkDevice = null,
-    QueueFamilies: QueueFamilies = QueueFamilies{},
-
-    GraphicsQueue: c.VkQueue = null,
-    PresentQueue: c.VkQueue = null,
-
-    fn IsPhysicalDeviceSuitable(device: c.VkPhysicalDevice) bool {
-        var props = c.VkPhysicalDeviceProperties{};
-        var features = c.VkPhysicalDeviceFeatures{};
-
-        c.vkGetPhysicalDeviceFeatures(device, &features);
-        c.vkGetPhysicalDeviceProperties(device, &props);
-
-        var rdev = Device{ .Physical = device };
-        if (rdev.QueueFamilies.RawFamilies == null) {
-            rdev.QueueFamilies.FindQueueFamilies(&rdev);
-        }
-        defer rdev.Destroy();
-
-        const has_families = (rdev.QueueFamilies.Graphics != null and rdev.QueueFamilies.Present != null);
-
-        // NOTE: MoltenVK only supports up to version 1.2, but most of these features can be
-        // used through extensions.
-        const version = props.apiVersion;
-        if (version >= c.VK_MAKE_VERSION(1, 2, 0) and has_families) {
-            Log.Info("Suitable Physical Device: {s}", .{props.deviceName});
-            return true;
-        }
-
-        Log.Warn("Failed Device: {d}.{d}.{d}, Graphics Family?: {s}, Present Family?: {s}", .{
-            c.VK_VERSION_MAJOR(version),
-            c.VK_VERSION_MINOR(version),
-            c.VK_VERSION_PATCH(version),
-            Log.YesNo(rdev.QueueFamilies.Graphics != null),
-            Log.YesNo(rdev.QueueFamilies.Present != null),
-        });
-
-        return false;
-    }
-
-    pub inline fn Get(self: Device) c.VkDevice {
-        return self.Device;
-    }
-
-    pub inline fn GetPhysical(self: Device) c.VkPhysicalDevice {
-        return self.Physical;
-    }
-
-    fn QueryQueues(self: *Device) void {
-        c.vkGetDeviceQueue(self.Device, self.QueueFamilies.Graphics.?, 0, &self.GraphicsQueue);
-        c.vkGetDeviceQueue(self.Device, self.QueueFamilies.Present.?, 0, &self.PresentQueue);
-    }
-
-    pub fn CreateLogicalDevice(self: *Device) void {
-        if (self.Physical == null) {
-            self.PickPhsyicalDevice();
-        }
-        if (self.QueueFamilies.Graphics == null or self.QueueFamilies.Present == null) {
-            self.QueueFamilies.FindQueueFamilies(self);
-        }
-
-        const queue_priority: f32 = 1.0;
-
-        errdefer Panic("Could not create logical device", null, .{});
-
-        const queue_families = [_]?u32{ self.QueueFamilies.Graphics, self.QueueFamilies.Present };
-
-        var queue_create_infos = try std.ArrayList(c.VkDeviceQueueCreateInfo).initCapacity(allocator, queue_families.len);
-        defer queue_create_infos.deinit();
-
-        for (queue_families) |family| {
-            if (family == null) {
-                continue;
-            }
-
-            try queue_create_infos.append(c.VkDeviceQueueCreateInfo{
-                .sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                .queueFamilyIndex = family.?,
-                .queueCount = 1,
-                .pQueuePriorities = &queue_priority,
-            });
-
-            // TODO: add smarter method (add more families if one does not support graphics, present, etc.)
-            if (self.QueueFamilies.Graphics == self.QueueFamilies.Present) {
-                break;
-            }
-        }
-
-        const device_features = c.VkPhysicalDeviceFeatures{};
-
-        // TODO: search for this prior to make sure its available
-        const device_extensions = [_][*:0]const u8{
-            "VK_KHR_portability_subset",
-            c.VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-        };
-
-        const create_info = c.VkDeviceCreateInfo{
-            .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            .pQueueCreateInfos = queue_create_infos.items.ptr,
-            .queueCreateInfoCount = @intCast(queue_create_infos.items.len),
-            .pEnabledFeatures = &device_features,
-            // device specific extensions
-            .enabledExtensionCount = device_extensions.len,
-            .ppEnabledExtensionNames = &device_extensions,
-            // these are no longer used
-            .enabledLayerCount = 0,
-            .ppEnabledLayerNames = null,
-        };
-
-        const result = c.vkCreateDevice(self.Physical, &create_info, VulkanAllocator, &self.Device);
-        if (result != c.VK_SUCCESS) {
-            Panic("Could not create logical device", result, .{});
-        }
-
-        self.QueryQueues();
-    }
-
-    pub fn PickPhsyicalDevice(self: *Device) void {
-        errdefer @panic("Could not pick physical devices!");
-
-        var device_count: u32 = 0;
-        _ = c.vkEnumeratePhysicalDevices(CurrentRenderer.Instance, &device_count, null);
-
-        if (device_count == 0) {
-            Panic("Could not find any physical devices with Vulkan support!", null, .{});
-        }
-
-        const physical_devices = try allocator.alloc(c.VkPhysicalDevice, device_count);
-        defer allocator.free(physical_devices);
-
-        const result = c.vkEnumeratePhysicalDevices(CurrentRenderer.Instance, &device_count, physical_devices.ptr);
-
-        if (result != c.VK_SUCCESS) {
-            Panic("Could not enumerate physical devices", result, .{});
-        }
-
-        // find the best device from our list
-        const physical_device: c.VkPhysicalDevice = blk: {
-            for (physical_devices) |device| {
-                if (IsPhysicalDeviceSuitable(device)) {
-                    break :blk device;
-                }
-            }
-            Panic("Cannot find a suitable device!", null, .{});
-        };
-
-        self.Physical = physical_device;
-    }
-
-    fn GetBestSurfaceFormat(self: Device) c.VkSurfaceFormatKHR {
-        errdefer @panic("Could not get surface formats");
-
-        const surface = CurrentRenderer.Surface;
-
-        var format_count: u32 = 0;
-        _ = c.vkGetPhysicalDeviceSurfaceFormatsKHR(self.Physical, surface, &format_count, null);
-
-        const formats = try allocator.alloc(c.VkSurfaceFormatKHR, format_count);
-        defer allocator.free(formats);
-
-        _ = c.vkGetPhysicalDeviceSurfaceFormatsKHR(self.Physical, surface, &format_count, formats.ptr);
-
-        for (formats) |format| {
-            if (format.format == c.VK_FORMAT_B8G8R8_SRGB) {
-                return format;
-            }
-        }
-
-        return formats[0];
-    }
-
-    pub fn Destroy(self: Device) void {
-        self.QueueFamilies.Destroy();
-
-        if (self.Device != null) {
-            c.vkDestroyDevice(self.Device, VulkanAllocator);
-        }
     }
 };
 
@@ -1260,7 +968,7 @@ pub fn CreateShaderModule(buffer: []u8) c.VkShaderModule {
 
     var shader: c.VkShaderModule = null;
 
-    const result = c.vkCreateShaderModule(CurrentRenderer.GetDevice().Device, &create_info, VulkanAllocator, &shader);
+    const result = c.vkCreateShaderModule(CurrentRenderer.GetDevice().Device, &create_info, VULKAN_ALLOCATOR, &shader);
     if (result != c.VK_SUCCESS) {
         Panic("Could not create shader module", result, .{});
     }
@@ -1268,7 +976,7 @@ pub fn CreateShaderModule(buffer: []u8) c.VkShaderModule {
 }
 
 pub fn DestroyShaderModule(shader: c.VkShaderModule) void {
-    c.vkDestroyShaderModule(CurrentRenderer.GetDevice().Device, shader, VulkanAllocator);
+    c.vkDestroyShaderModule(CurrentRenderer.GetDevice().Device, shader, VULKAN_ALLOCATOR);
 }
 
 pub const ShaderList = struct {
@@ -1360,7 +1068,7 @@ pub const RenderPass = struct {
             .pDependencies = &subpass_dependency,
         };
 
-        const result = c.vkCreateRenderPass(CurrentRenderer.GetDevice().Device, &render_pass_info, VulkanAllocator, &self.RenderPass);
+        const result = c.vkCreateRenderPass(CurrentRenderer.GetDevice().Device, &render_pass_info, VULKAN_ALLOCATOR, &self.RenderPass);
         if (result != c.VK_SUCCESS) {
             Panic("Could not create renderpass!", result, .{});
         }
@@ -1407,7 +1115,7 @@ pub const RenderPass = struct {
     pub fn Destroy(self: RenderPass) void {
         const device = CurrentRenderer.GetDevice().Device;
 
-        c.vkDestroyRenderPass(device, self.RenderPass, VulkanAllocator);
+        c.vkDestroyRenderPass(device, self.RenderPass, VULKAN_ALLOCATOR);
     }
 };
 
@@ -1575,7 +1283,7 @@ pub const GraphicsPipeline = struct {
             .pNext = null,
         };
 
-        const result = c.vkCreateGraphicsPipelines(CurrentRenderer.GetDevice().Device, null, 1, &pipeline_info, VulkanAllocator, &self.Pipeline);
+        const result = c.vkCreateGraphicsPipelines(CurrentRenderer.GetDevice().Device, null, 1, &pipeline_info, VULKAN_ALLOCATOR, &self.Pipeline);
         if (result != c.VK_SUCCESS) {
             Panic("Failed to create graphics pipeline", result, .{});
         }
@@ -1594,7 +1302,7 @@ pub const GraphicsPipeline = struct {
             .pPushConstantRanges = null,
         };
 
-        const result = c.vkCreatePipelineLayout(CurrentRenderer.GetDevice().Device, &pipeline_layout_info, VulkanAllocator, &self.Layout);
+        const result = c.vkCreatePipelineLayout(CurrentRenderer.GetDevice().Device, &pipeline_layout_info, VULKAN_ALLOCATOR, &self.Layout);
 
         if (result != c.VK_SUCCESS) {
             Panic("Could not create graphics pipeline layout", result, .{});
@@ -1613,80 +1321,7 @@ pub const GraphicsPipeline = struct {
         }
 
         if (self.Pipeline) |pipeline| {
-            c.vkDestroyPipeline(device, pipeline, VulkanAllocator);
+            c.vkDestroyPipeline(device, pipeline, VULKAN_ALLOCATOR);
         }
     }
 };
-
-//////////////////////////////////
-// Utility Functions
-//////////////////////////////////
-
-pub fn Panic(comptime msg: []const u8, result: ?c.VkResult, args: anytype) noreturn {
-    Log.ThreadSafe = false;
-
-    Log.Custom(Log.TextColor.Error, "VKPANIC: ", msg, args);
-
-    if (result) |res| {
-        Log.Custom(Log.TextColor.Error, " => Msg: ", "{s} ({d})", .{ VkResultStr(res), res });
-    }
-
-    Log.WriteChar('\n');
-
-    @panic("Renderer panic occurred");
-}
-
-pub fn VkResultStr(result: c.VkResult) []const u8 {
-    return switch (result) {
-        c.VK_SUCCESS => "VK_SUCCESS",
-        c.VK_NOT_READY => "VK_NOT_READY",
-        c.VK_TIMEOUT => "VK_TIMEOUT",
-        c.VK_EVENT_SET => "VK_EVENT_SET",
-        c.VK_EVENT_RESET => "VK_EVENT_RESET",
-        c.VK_INCOMPLETE => "VK_INCOMPLETE",
-        c.VK_ERROR_OUT_OF_HOST_MEMORY => "VK_ERROR_OUT_OF_HOST_MEMORY",
-        c.VK_ERROR_OUT_OF_DEVICE_MEMORY => "VK_ERROR_OUT_OF_DEVICE_MEMORY",
-        c.VK_ERROR_INITIALIZATION_FAILED => "VK_ERROR_INITIALIZATION_FAILED",
-        c.VK_ERROR_DEVICE_LOST => "VK_ERROR_DEVICE_LOST",
-        c.VK_ERROR_MEMORY_MAP_FAILED => "VK_ERROR_MEMORY_MAP_FAILED",
-        c.VK_ERROR_LAYER_NOT_PRESENT => "VK_ERROR_LAYER_NOT_PRESENT",
-        c.VK_ERROR_EXTENSION_NOT_PRESENT => "VK_ERROR_EXTENSION_NOT_PRESENT",
-        c.VK_ERROR_FEATURE_NOT_PRESENT => "VK_ERROR_FEATURE_NOT_PRESENT",
-        c.VK_ERROR_INCOMPATIBLE_DRIVER => "VK_ERROR_INCOMPATIBLE_DRIVER",
-        c.VK_ERROR_TOO_MANY_OBJECTS => "VK_ERROR_TOO_MANY_OBJECTS",
-        c.VK_ERROR_FORMAT_NOT_SUPPORTED => "VK_ERROR_FORMAT_NOT_SUPPORTED",
-        c.VK_ERROR_FRAGMENTED_POOL => "VK_ERROR_FRAGMENTED_POOL",
-        c.VK_ERROR_UNKNOWN => "VK_ERROR_UNKNOWN",
-        c.VK_ERROR_OUT_OF_POOL_MEMORY => "VK_ERROR_OUT_OF_POOL_MEMORY",
-        c.VK_ERROR_INVALID_EXTERNAL_HANDLE => "VK_ERROR_INVALID_EXTERNAL_HANDLE",
-        c.VK_ERROR_FRAGMENTATION => "VK_ERROR_FRAGMENTATION",
-        c.VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS => "VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS",
-        c.VK_PIPELINE_COMPILE_REQUIRED => "VK_PIPELINE_COMPILE_REQUIRED",
-        c.VK_ERROR_NOT_PERMITTED => "VK_ERROR_NOT_PERMITTED",
-        c.VK_ERROR_SURFACE_LOST_KHR => "VK_ERROR_SURFACE_LOST_KHR",
-        c.VK_ERROR_NATIVE_WINDOW_IN_USE_KHR => "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR",
-        c.VK_SUBOPTIMAL_KHR => "VK_SUBOPTIMAL_KHR",
-        c.VK_ERROR_OUT_OF_DATE_KHR => "VK_ERROR_OUT_OF_DATE_KHR",
-        c.VK_ERROR_INCOMPATIBLE_DISPLAY_KHR => "VK_ERROR_INCOMPATIBLE_DISPLAY_KHR",
-        c.VK_ERROR_VALIDATION_FAILED_EXT => "VK_ERROR_VALIDATION_FAILED_EXT",
-        c.VK_ERROR_INVALID_SHADER_NV => "VK_ERROR_INVALID_SHADER_NV",
-        c.VK_ERROR_IMAGE_USAGE_NOT_SUPPORTED_KHR => "VK_ERROR_IMAGE_USAGE_NOT_SUPPORTED_KHR",
-        c.VK_ERROR_VIDEO_PICTURE_LAYOUT_NOT_SUPPORTED_KHR => "VK_ERROR_VIDEO_PICTURE_LAYOUT_NOT_SUPPORTED_KHR",
-        c.VK_ERROR_VIDEO_PROFILE_OPERATION_NOT_SUPPORTED_KHR => "VK_ERROR_VIDEO_PROFILE_OPERATION_NOT_SUPPORTED_KHR",
-        c.VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR => "VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR",
-        c.VK_ERROR_VIDEO_PROFILE_CODEC_NOT_SUPPORTED_KHR => "VK_ERROR_VIDEO_PROFILE_CODEC_NOT_SUPPORTED_KHR",
-        c.VK_ERROR_VIDEO_STD_VERSION_NOT_SUPPORTED_KHR => "VK_ERROR_VIDEO_STD_VERSION_NOT_SUPPORTED_KHR",
-        c.VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT => "VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT",
-        c.VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT => "VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT",
-        c.VK_THREAD_IDLE_KHR => "VK_THREAD_IDLE_KHR",
-        c.VK_THREAD_DONE_KHR => "VK_THREAD_DONE_KHR",
-        c.VK_OPERATION_DEFERRED_KHR => "VK_OPERATION_DEFERRED_KHR",
-        c.VK_OPERATION_NOT_DEFERRED_KHR => "VK_OPERATION_NOT_DEFERRED_KHR",
-        c.VK_ERROR_INVALID_VIDEO_STD_PARAMETERS_KHR => "VK_ERROR_INVALID_VIDEO_STD_PARAMETERS_KHR",
-        c.VK_ERROR_COMPRESSION_EXHAUSTED_EXT => "VK_ERROR_COMPRESSION_EXHAUSTED_EXT",
-        c.VK_INCOMPATIBLE_SHADER_BINARY_EXT => "VK_INCOMPATIBLE_SHADER_BINARY_EXT",
-        c.VK_PIPELINE_BINARY_MISSING_KHR => "VK_PIPELINE_BINARY_MISSING_KHR",
-        c.VK_ERROR_NOT_ENOUGH_SPACE_KHR => "VK_ERROR_NOT_ENOUGH_SPACE_KHR",
-        else => "Unhandled VkResult",
-    };
-}

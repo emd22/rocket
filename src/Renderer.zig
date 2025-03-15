@@ -5,6 +5,7 @@ const Log = @import("Log.zig");
 const Shader = @import("Shader.zig").Shader;
 
 const v = @import("Backend/Vulkan.zig");
+const RenderError = @import("Backend/Vulkan/Error.zig").RenderError;
 const VkRenderer = v.Renderer;
 
 const TVec2i = @import("Math/Vector.zig").TVec2i;
@@ -111,7 +112,13 @@ pub const Renderer = struct {
     }
 
     pub fn Render(self: Self) void {
-        self.Renderer.BeginFrame(&GraphicsPipeline);
+        self.Renderer.BeginFrame(&GraphicsPipeline) catch |err| {
+            if (err == RenderError.GraphicsOutOfDate) {
+                return;
+            } else {
+                Panic("Unhandled renderer error!", .{});
+            }
+        };
 
         c.vkCmdDraw(self.Renderer.GetFrame().CommandBuffer.CommandBuffer, 3, 1, 0, 0);
 
@@ -119,7 +126,7 @@ pub const Renderer = struct {
     }
 
     fn CreateWindow(self: *Self) void {
-        const window_flags: c.SDL_WindowFlags = c.SDL_WINDOW_VULKAN;
+        const window_flags: c.SDL_WindowFlags = c.SDL_WINDOW_VULKAN | c.SDL_WINDOW_RESIZABLE;
 
         // const driver_str_c = c.SDL_GetGPUDriver(1);
         // const driver_str = std.mem.span(driver_str_c);
