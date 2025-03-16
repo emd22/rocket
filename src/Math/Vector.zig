@@ -149,13 +149,6 @@ pub fn TVec(comptime T: type) type {
 
         /// Log out the vector data using the Log system.
         pub fn Print(self: Self) void {
-            Log.ThreadSafe = false;
-            defer Log.ThreadSafe = true;
-
-            const log_mutex = Log.GetMutex();
-            log_mutex.lock();
-            defer log_mutex.unlock();
-
             Log.WriteChar('{');
 
             inline for (0..TLen) |i| {

@@ -22,18 +22,11 @@ pub const Level = enum(u8) {
     RenFatal,
 };
 
-pub var ThreadSafe = true;
 pub var OutputWriter = std.io.getStdOut().writer();
-
-var LogMutex = std.Thread.Mutex{};
 
 const Tuple = std.meta.Tuple;
 
 const Builtin = @import("builtin");
-
-pub fn GetMutex() *std.Thread.Mutex {
-    return &LogMutex;
-}
 
 pub inline fn YesNo(value: bool) []const u8 {
     return if (value) "Yes" else "No";
@@ -46,10 +39,6 @@ fn InternLog(comptime level: Level, comptime fmt: []const u8, args: anytype) voi
     }
 
     errdefer @panic("Could not log to stream");
-
-    if (ThreadSafe) {
-        LogMutex.lock();
-    }
 
     const data: Tuple(&.{ TextColor, []const u8, bool }) = switch (level) {
         .Debug => .{ TextColor.Debug, "Debug", false },
@@ -73,68 +62,32 @@ fn InternLog(comptime level: Level, comptime fmt: []const u8, args: anytype) voi
 
     try OutputWriter.print(fmt, args);
     try OutputWriter.writeByte('\n');
-
-    if (ThreadSafe) {
-        LogMutex.unlock();
-    }
 }
 
 pub fn SetColor(color: TextColor) void {
     errdefer @panic("Could not set text color(could not log to output stream)");
 
-    if (ThreadSafe) {
-        LogMutex.lock();
-    }
-
     try OutputWriter.print("\x1b[{d}m", .{@intFromEnum(color)});
-
-    if (ThreadSafe) {
-        defer LogMutex.unlock();
-    }
 }
 
 pub fn Custom(color: TextColor, pretext: []const u8, comptime fmt: []const u8, args: anytype) void {
     errdefer @panic("Could not log to stream");
 
-    if (ThreadSafe) {
-        LogMutex.lock();
-    }
-
     try OutputWriter.print("\x1b[{d}m{s}\x1b[0m ", .{ @intFromEnum(color), pretext });
 
     try OutputWriter.print(fmt, args);
     try OutputWriter.writeByte('\n');
-
-    if (ThreadSafe) {
-        defer LogMutex.unlock();
-    }
 }
 
 pub fn WriteRaw(comptime fmt: []const u8, args: anytype) void {
     errdefer @panic("Could not log to stream");
-
-    if (ThreadSafe) {
-        LogMutex.lock();
-    }
     try OutputWriter.print(fmt, args);
-
-    if (ThreadSafe) {
-        defer LogMutex.unlock();
-    }
 }
 
 pub fn WriteChar(value: u8) void {
     errdefer @panic("Could not log to stream");
 
-    if (ThreadSafe) {
-        LogMutex.lock();
-    }
-
     try OutputWriter.writeByte(value);
-
-    if (ThreadSafe) {
-        defer LogMutex.unlock();
-    }
 }
 
 pub fn Debug(comptime fmt: []const u8, args: anytype) void {

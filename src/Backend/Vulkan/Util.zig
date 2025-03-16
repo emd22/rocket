@@ -19,8 +19,6 @@ pub inline fn TryVk(status: c.VkResult, comptime on_error: []const u8) void {
 }
 
 pub fn Panic(comptime msg: []const u8, result: ?c.VkResult, args: anytype) noreturn {
-    Log.ThreadSafe = false;
-
     Log.Custom(Log.TextColor.Error, "VKPANIC: ", msg, args);
 
     if (result) |res| {

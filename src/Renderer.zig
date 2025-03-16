@@ -237,8 +237,6 @@ pub const Renderer = struct {
 }{};
 
 pub fn Panic(comptime msg: []const u8, args: anytype) noreturn {
-    Log.ThreadSafe = false;
-
     Log.Custom(Log.TextColor.Error, "PANIC: ", msg, args);
     const err = @as(?[*:0]const u8, c.SDL_GetError()) orelse "[null error]";
     Log.Custom(Log.TextColor.Error, " => Msg: ", "{s}", .{err});

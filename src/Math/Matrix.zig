@@ -48,16 +48,6 @@ pub const Mat4 = struct {
     }
 
     pub fn Print(mat: *Mat4) void {
-        Log.ThreadSafe = false;
-        defer Log.ThreadSafe = true;
-
-        // better to do our own mutex operations here to avoid
-        // constantly locking/unlocking
-        const log_mutex = Log.GetMutex();
-
-        log_mutex.lock();
-        defer log_mutex.unlock();
-
         inline for (0..4) |i| {
             const vec = mat.v[i];
             Log.WriteRaw("[ {d: >10.6} {d: >10.6} {d: >10.6} {d: >10.6} ]\n", .{ vec[0], vec[1], vec[2], vec[3] });
@@ -229,16 +219,6 @@ pub const Mat3 = struct {
     }
 
     pub fn Print(mat: *Self) void {
-        Log.ThreadSafe = false;
-        defer Log.ThreadSafe = true;
-
-        // better to do our own mutex operations here to avoid
-        // constantly locking/unlocking
-        const log_mutex = Log.GetMutex();
-
-        log_mutex.lock();
-        defer log_mutex.unlock();
-
         inline for (0..3) |i| {
             const vec = mat.v[i];
             // fill with [ ](space), align right with column of size 10, maximum 6 decimal points
