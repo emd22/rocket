@@ -10,4 +10,7 @@ pub const c = @cImport({
 
     @cInclude("SDL3/SDL_vulkan.h");
     @cInclude("vulkan/vulkan.h");
+
+    @cDefine("VMA_VULKAN_VERSION", "1003000");
+    @cInclude("vk_mem_alloc.h");
 });

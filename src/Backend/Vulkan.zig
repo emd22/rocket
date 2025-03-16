@@ -530,6 +530,8 @@ pub const Renderer = struct {
 
     ImageIndex: u32 = 0,
 
+    GPUAllocator: c.VmaAllocator = null,
+
     const Self = @This();
 
     const FRAMES_IN_FLIGHT = 2;
@@ -615,11 +617,24 @@ pub const Renderer = struct {
             self.SelectDevice(device);
         }
 
-        self.Swapchain.Create(window_size);
+        self.InitGPUAllocator();
 
+        self.Swapchain.Create(window_size);
         self.InitFrames();
 
         self.Initialized = true;
+    }
+
+    inline fn InitGPUAllocator(self: *Renderer) void {
+        const device = self.GetDevice();
+
+        const allocator_info = c.VmaAllocatorCreateInfo{
+            .physicalDevice = device.Physical,
+            .device = device.Device,
+            .instance = self.Instance,
+        };
+
+        TryVk(c.vmaCreateAllocator(&allocator_info, &self.GPUAllocator), "Could not initialize VMA allocator");
     }
 
     fn QueryInstanceExtensions(self: *Self) void {
@@ -955,6 +970,10 @@ pub const Renderer = struct {
 
         allocator.free(self.Frames);
 
+        if (self.GPUAllocator != null) {
+            c.vmaDestroyAllocator(self.GPUAllocator);
+        }
+
         self.Initialized = false;
     }
 };
@@ -1119,6 +1138,41 @@ pub const RenderPass = struct {
     }
 };
 
+pub const Vertex = struct {
+    Position: @Vector(3, f32),
+    Normal: @Vector(3, f32) = @splat(0),
+};
+
+pub const GPUBuffer = struct {
+    Buffer: c.VkBuffer,
+
+    pub const Usage = enum(i32) {
+        Vertices = c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+    };
+
+    pub fn Create(self: *GPUBuffer, usage: Usage, size: u64) void() {
+        const create_info = c.VkBufferCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = size,
+            .usage = @intFromEnum(usage),
+            .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
+            .flags = 0,
+        };
+
+        const device = CurrentRenderer.GetDevice();
+        const status = c.vkCreateBuffer(device.Device, &create_info, FUtil.VULKAN_ALLOCATOR, &self.Buffer);
+        if (status != c.VK_SUCCESS) {
+            Panic("Could not create GPU buffer! (usage: {s})", status, .{std.enums.tagName(Usage, usage)});
+        }
+    }
+
+    pub fn Destroy(self: *GPUBuffer) void {
+        const device = CurrentRenderer.GetDevice();
+
+        c.vkDestroyBuffer(device.Device, self.Buffer, FUtil.VULKAN_ALLOCATOR);
+    }
+};
+
 pub const GraphicsPipeline = struct {
     Shaders: ShaderList = .{ .Fragment = null, .Vertex = null },
     Layout: c.VkPipelineLayout = null,
@@ -1126,6 +1180,27 @@ pub const GraphicsPipeline = struct {
     Pipeline: c.VkPipeline = null,
 
     RenderPass: RenderPass = RenderPass{},
+
+    fn MakeVertexInfo() struct { binding: c.VkVertexInputBindingDescription, attributes: []c.VkVertexInputAttributeDescription } {
+        const binding_desc = c.VkVertexInputBindingDescription{
+            .binding = 0,
+            .stride = @sizeOf(Vertex),
+            .inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX,
+        };
+
+        const attribs = [_]c.VkVertexInputAttributeDescription{
+            .{ .binding = 0, .location = 0, .format = c.VK_FORMAT_R32G32_SFLOAT, .offset = 0 },
+            .{ .binding = 0, .location = 1, .format = c.VK_FORMAT_R32G32B32_SFLOAT, .offset = @offsetOf(Vertex, "Normal") },
+        };
+
+        const attributes: []c.VkVertexInputAttributeDescription = allocator.alloc(c.VkVertexInputAttributeDescription, attribs.len) catch {
+            Panic("Error making vertex attribute list", null, .{});
+        };
+
+        std.mem.copyForwards(c.VkVertexInputAttributeDescription, attributes, &attribs);
+
+        return .{ .binding = binding_desc, .attributes = attributes };
+    }
 
     pub fn Create(self: *GraphicsPipeline, shader_list: ShaderList) void {
         AssertRendererExists(.{});
@@ -1165,12 +1240,15 @@ pub const GraphicsPipeline = struct {
             .pDynamicStates = &dynamic_states,
         };
 
+        const vertex_info = MakeVertexInfo();
+        defer allocator.free(vertex_info.attributes);
+
         const vertex_input_info = c.VkPipelineVertexInputStateCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-            .vertexBindingDescriptionCount = 0,
-            .pVertexBindingDescriptions = null,
-            .vertexAttributeDescriptionCount = 0,
-            .pVertexAttributeDescriptions = null,
+            .vertexBindingDescriptionCount = 1,
+            .pVertexBindingDescriptions = &vertex_info.binding,
+            .vertexAttributeDescriptionCount = @intCast(vertex_info.attributes.len),
+            .pVertexAttributeDescriptions = vertex_info.attributes.ptr,
         };
 
         const input_assembly_info = c.VkPipelineInputAssemblyStateCreateInfo{

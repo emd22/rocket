@@ -17,27 +17,17 @@ pub fn build(b: *std.Build) void {
         .preferred_optimize_mode = .Debug,
     });
 
-    const lib = b.addStaticLibrary(.{
-        .name = "ren",
-        // In this case the main source file is merely a path, however, in more
-        // complicated build scripts, this could be a generated file.
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // This declares intent for the library to be installed into the standard
-    // location when the user invokes the "install" step (the default step when
-    // running `zig build`).
-    b.installArtifact(lib);
-
     const exe = b.addExecutable(.{
         .name = "ren",
         .root_source_file = b.path("src/Main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    exe.addCSourceFiles(.{ .files = &[_][]const u8{"src/CSrc/cgltf.c"} });
+    exe.linkLibCpp();
+    exe.addCSourceFiles(.{ .files = &[_][]const u8{
+        "src/CSrc/cgltf.c",
+        "src/CSrc/vma_usage.cpp",
+    } });
     exe.addIncludePath(.{ .cwd_relative = "src/CSrc/" });
 
     const sdl_dep = b.dependency("sdl", .{ .target = target, .optimize = optimize });

@@ -12,11 +12,7 @@ const TVec2i = @import("Math/Vector.zig").TVec2i;
 
 // var RenderPipeline: *c.SDL_GPUGraphicsPipeline = undefined;
 
-pub const Vertex = struct {
-    Position: @Vector(3, f32),
-    Normal: @Vector(3, f32) = @splat(0),
-};
-
+const Vertex = v.Vertex;
 var GraphicsPipeline = v.GraphicsPipeline{};
 
 pub const Renderer = struct {
