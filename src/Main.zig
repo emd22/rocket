@@ -10,6 +10,7 @@ var DataHandler = @import("GPUMem.zig").DataHandler;
 const Log = @import("Log.zig");
 
 const FRenderer = @import("Renderer.zig");
+const v = @import("Backend/Vulkan.zig");
 
 var Renderer = FRenderer.Renderer;
 const Vertex = FRenderer.Vertex;
@@ -174,7 +175,19 @@ fn Render() void {
     const mvp_matrix = ModelMatrix.Multiply(Player.Camera.GetVPMatrix());
     _ = mvp_matrix;
 
-    Renderer.Render();
+    // Renderer.Render();
+    //
+    //
+    Renderer.StartFrame() catch |err| {
+        if (err == FRenderer.RenderError.GraphicsOutOfDate) {
+            return;
+        } else {
+            FRenderer.Panic("Unhandled renderer error!", .{});
+        }
+    };
+
+    test_mesh.Render();
+    Renderer.EndFrame();
 
     // const color_target_info: c.SDL_GPUColorTargetInfo = .{
     //     .texture = swapchain_texture,
@@ -243,9 +256,9 @@ fn HandleControls() void {
 }
 
 const Mesh = struct {
-    VertexBuffer: ?*c.SDL_GPUBuffer = null,
+    VertexBuffer: v.GPUBuffer(Vertex) = .{},
     VertexCount: u32 = 0,
-    IndexBuffer: ?*c.SDL_GPUBuffer = null,
+    IndexBuffer: v.GPUBuffer(u32) = .{},
     IndexCount: u32 = 0,
 
     // fn TransferBufferToGPU(comptime T: type, buffer: []T, output_buffer: ?*c.SDL_GPUBuffer, cmd_buffer: *c.SDL_GPUCommandBuffer) *c.SDL_GPUTransferBuffer {
@@ -284,9 +297,21 @@ const Mesh = struct {
     // }
 
     pub fn UploadToGPU(self: *Mesh, vertices: []Vertex, indices: ?[]u32) void {
-        _ = self;
-        _ = vertices;
-        _ = indices;
+        // create and transfer vertex buffer to GPU
+        {
+            self.VertexCount = @intCast(vertices.len);
+            self.VertexBuffer.Create(.Vertices, self.VertexCount);
+
+            self.VertexBuffer.Upload(vertices);
+        }
+
+        // if we have indices passed in, create and transfer them too
+        if (indices) |data| {
+            self.IndexCount = @intCast(data.len);
+            self.IndexBuffer.Create(.Indices, self.IndexCount);
+
+            self.IndexBuffer.Upload(data);
+        }
         // self.VertexCount = @intCast(vertices.len);
 
         // Log.Info("Mesh vertex count: {d}", .{self.VertexCount});
@@ -333,12 +358,7 @@ const Mesh = struct {
         // }
     }
 
-    pub fn Render(self: Mesh, render_pass: *c.SDL_GPURenderPass, command_buffer: *c.SDL_GPUCommandBuffer, mvp_matrix: *m.Mat4, model_matrix: *m.Mat4) void {
-        _ = self;
-        _ = render_pass;
-        _ = command_buffer;
-        _ = mvp_matrix;
-        _ = model_matrix;
+    pub fn Render(self: Mesh) void {
 
         // c.SDL_PushGPUVertexUniformData(command_buffer, 0, &mvp_matrix.v, @sizeOf(m.Mat4));
         // c.SDL_PushGPUVertexUniformData(command_buffer, 1, &model_matrix.v, @sizeOf(m.Mat4));
@@ -351,6 +371,19 @@ const Mesh = struct {
         // } else {
         //     c.SDL_DrawGPUPrimitives(render_pass, self.VertexCount, 1, 0, 0);
         // }
+        const offset: c.VkDeviceSize = 0;
+        const frame = v.GetCurrentRenderer().GetFrame();
+        const cmd = frame.CommandBuffer.CommandBuffer;
+        c.vkCmdBindVertexBuffers(cmd, 0, 1, &self.VertexBuffer.Buffer, &offset);
+        c.vkCmdDraw(cmd, self.VertexCount, 1, 0, 0);
+    }
+
+    pub fn Destroy(self: *Mesh) void {
+        self.VertexBuffer.Destroy();
+
+        if (self.IndexBuffer.Initialized == true) {
+            self.IndexBuffer.Destroy();
+        }
     }
 };
 
@@ -484,11 +517,11 @@ pub fn main() !void {
 
     // Player.Camera.UpdateProjectionMatrix(.{ .AspectRatio = aspect_ratio });
 
-    // var test_mesh_verts = [_]Vertex{
-    //     .{ .Pos = .{ -1, -1, 0 } },
-    //     .{ .Pos = .{ 1, -1, 0 } },
-    //     .{ .Pos = .{ 0, 1, 0 } },
-    // };
+    var test_mesh_verts = [_]Vertex{
+        .{ .Position = .{ -1, -1, 0 } },
+        .{ .Position = .{ 1, -1, 0 } },
+        .{ .Position = .{ 0, 1, 0 } },
+    };
     //
     // var test_mesh_verts = [_]Vertex{
     //     .{ .Position = .{ -0.5, -0.5, 0.5 } }, // 0: Bottom-left
@@ -518,7 +551,8 @@ pub fn main() !void {
     //     0, 1, 5, 0, 5, 4,
     // };
 
-    // test_mesh.UploadToGPU(vertices, indices);
+    test_mesh.UploadToGPU(&test_mesh_verts, null);
+    defer test_mesh.Destroy();
 
     while (running) {
         ProcessEvents();

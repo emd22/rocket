@@ -530,7 +530,7 @@ pub const Renderer = struct {
 
     ImageIndex: u32 = 0,
 
-    GPUAllocator: c.VmaAllocator = null,
+    GPUAllocator: vma.VmaAllocator = null,
 
     const Self = @This();
 
@@ -628,13 +628,13 @@ pub const Renderer = struct {
     inline fn InitGPUAllocator(self: *Renderer) void {
         const device = self.GetDevice();
 
-        const allocator_info = c.VmaAllocatorCreateInfo{
-            .physicalDevice = device.Physical,
-            .device = device.Device,
-            .instance = self.Instance,
+        const allocator_info = vma.VmaAllocatorCreateInfo{
+            .physicalDevice = @ptrCast(device.Physical),
+            .device = @ptrCast(device.Device),
+            .instance = @ptrCast(self.Instance),
         };
 
-        TryVk(c.vmaCreateAllocator(&allocator_info, &self.GPUAllocator), "Could not initialize VMA allocator");
+        TryVk(vma.vmaCreateAllocator(&allocator_info, &self.GPUAllocator), "Could not initialize VMA allocator");
     }
 
     fn QueryInstanceExtensions(self: *Self) void {
@@ -971,7 +971,7 @@ pub const Renderer = struct {
         allocator.free(self.Frames);
 
         if (self.GPUAllocator != null) {
-            c.vmaDestroyAllocator(self.GPUAllocator);
+            // vma.vmaDestroyAllocator(self.GPUAllocator);
         }
 
         self.Initialized = false;
@@ -1139,39 +1139,111 @@ pub const RenderPass = struct {
 };
 
 pub const Vertex = struct {
-    Position: @Vector(3, f32),
+    Position: @Vector(3, f32) = @splat(0),
     Normal: @Vector(3, f32) = @splat(0),
 };
 
-pub const GPUBuffer = struct {
-    Buffer: c.VkBuffer,
+const vma = @import("../CLibs.zig").vma;
 
-    pub const Usage = enum(i32) {
-        Vertices = c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-    };
+/// Creates a buffer in GPU memory that can be written to or read from.
+/// `ElementType` is the data structure to be held inside the GPU buffer.
+pub fn GPUBuffer(comptime ElementType: type) type {
+    const element_size = @sizeOf(ElementType);
 
-    pub fn Create(self: *GPUBuffer, usage: Usage, size: u64) void() {
-        const create_info = c.VkBufferCreateInfo{
-            .sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .size = size,
-            .usage = @intFromEnum(usage),
-            .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
-            .flags = 0,
+    return struct {
+        Buffer: c.VkBuffer = null,
+        Allocation: vma.VmaAllocation = null,
+
+        Usage: UsageType = undefined,
+
+        ElementCount: u64 = 0,
+
+        Initialized: bool = false,
+
+        const Self = @This();
+
+        pub const UsageType = enum(u32) {
+            Vertices = c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            Indices = c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
         };
 
-        const device = CurrentRenderer.GetDevice();
-        const status = c.vkCreateBuffer(device.Device, &create_info, FUtil.VULKAN_ALLOCATOR, &self.Buffer);
-        if (status != c.VK_SUCCESS) {
-            Panic("Could not create GPU buffer! (usage: {s})", status, .{std.enums.tagName(Usage, usage)});
+        inline fn BSize(element_count: u64) u64 {
+            return element_count * element_size;
         }
-    }
 
-    pub fn Destroy(self: *GPUBuffer) void {
-        const device = CurrentRenderer.GetDevice();
+        /// Uploads data from the system memory to the GPU buffer
+        pub fn Upload(self: *Self, data: []ElementType) void {
+            if (!self.Initialized) {
+                Panic("Cannot upload data as GPUBuffer has not been previously initialized", null, .{});
+            }
 
-        c.vkDestroyBuffer(device.Device, self.Buffer, FUtil.VULKAN_ALLOCATOR);
-    }
-};
+            const gpu_allocator = CurrentRenderer.GPUAllocator;
+
+            const data_size = BSize(@intCast(data.len));
+
+            if (data_size > BSize(self.ElementCount)) {
+                Log.Error("Upload size is larger than buffer size (Data:{d}, Buf:{d})", .{ data_size, BSize(self.ElementCount) });
+            }
+
+            var mapped_buffer: [*c]c_char = undefined;
+
+            // map the GPU memory to system memory
+            const status = vma.vmaMapMemory(gpu_allocator, self.Allocation, &mapped_buffer);
+            if (status != c.VK_SUCCESS) {
+                Log.Error(
+                    "Could not map video memory to main memory! (BufSz:{d}, Usage:{s})",
+                    .{ BSize(self.ElementCount), std.enums.tagName(UsageType, self.Usage) orelse "Unknown" },
+                );
+                return;
+            }
+
+            // copy to the GPU buffer's mapped address
+            // using c's memcopy as we do not have a slice for our mapped buffer
+            _ = c.memcpy(mapped_buffer, data.ptr, data_size);
+
+            // unmap to free the address
+            vma.vmaUnmapMemory(gpu_allocator, self.Allocation);
+        }
+
+        pub fn Create(self: *Self, usage: UsageType, element_count: u64) void {
+            self.ElementCount = element_count;
+
+            const size = element_count * element_size;
+
+            const buffer_create_info = c.VkBufferCreateInfo{
+                .sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = size,
+                .usage = @intFromEnum(usage),
+                .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
+                .flags = 0,
+            };
+
+            self.Usage = usage;
+
+            const alloc_create_info = vma.VmaAllocationCreateInfo{ .usage = vma.VMA_MEMORY_USAGE_CPU_TO_GPU };
+
+            const binfos = [_]c.VkBufferCreateInfo{buffer_create_info};
+            const ainfos = [_]vma.VmaAllocationCreateInfo{alloc_create_info};
+
+            const status = vma.vmaCreateBuffer(CurrentRenderer.GPUAllocator, @ptrCast(&binfos), @ptrCast(&ainfos), &self.Buffer, &self.Allocation, null);
+            // const status = c.vkCreateBuffer(device.Device, &create_info, FUtil.VULKAN_ALLOCATOR, &self.Buffer);
+            if (status != c.VK_SUCCESS) {
+                Panic("Could not create GPU buffer! (usage: {s})", status, .{std.enums.tagName(UsageType, usage) orelse "Unknown"});
+            }
+
+            self.Initialized = true;
+        }
+
+        pub fn Destroy(self: *Self) void {
+            // const device = CurrentRenderer.GetDevice();
+
+            // c.vkDestroyBuffer(device.Device, self.Buffer, FUtil.VULKAN_ALLOCATOR);
+            //
+            self.Initialized = false;
+            vma.vmaDestroyBuffer(CurrentRenderer.GPUAllocator, @ptrCast(self.Buffer), @ptrCast(self.Allocation));
+        }
+    };
+}
 
 pub const GraphicsPipeline = struct {
     Shaders: ShaderList = .{ .Fragment = null, .Vertex = null },

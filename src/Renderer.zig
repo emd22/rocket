@@ -5,14 +5,14 @@ const Log = @import("Log.zig");
 const Shader = @import("Shader.zig").Shader;
 
 const v = @import("Backend/Vulkan.zig");
-const RenderError = @import("Backend/Vulkan/Error.zig").RenderError;
+pub const RenderError = @import("Backend/Vulkan/Error.zig").RenderError;
 const VkRenderer = v.Renderer;
 
 const TVec2i = @import("Math/Vector.zig").TVec2i;
 
 // var RenderPipeline: *c.SDL_GPUGraphicsPipeline = undefined;
 
-const Vertex = v.Vertex;
+pub const Vertex = v.Vertex;
 var GraphicsPipeline = v.GraphicsPipeline{};
 
 pub const Renderer = struct {
@@ -107,6 +107,14 @@ pub const Renderer = struct {
         // );
     }
 
+    pub fn StartFrame(self: Self) RenderError!void {
+        try self.Renderer.BeginFrame(&GraphicsPipeline);
+    }
+
+    pub fn EndFrame(self: Self) void {
+        self.Renderer.FinishFrame(GraphicsPipeline);
+    }
+
     pub fn Render(self: Self) void {
         self.Renderer.BeginFrame(&GraphicsPipeline) catch |err| {
             if (err == RenderError.GraphicsOutOfDate) {
@@ -116,7 +124,7 @@ pub const Renderer = struct {
             }
         };
 
-        c.vkCmdDraw(self.Renderer.GetFrame().CommandBuffer.CommandBuffer, 3, 1, 0, 0);
+        // c.vkCmdDraw(self.Renderer.GetFrame().CommandBuffer.CommandBuffer, 3, 1, 0, 0);
 
         self.Renderer.FinishFrame(GraphicsPipeline);
     }

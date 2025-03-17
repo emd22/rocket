@@ -5,18 +5,13 @@ using namespace metal;
 
 struct main0_out
 {
-    float4 outColor [[color(0)]];
+    float4 Color [[color(0)]];
 };
 
-struct main0_in
-{
-    float3 fragColor [[user(locn0)]];
-};
-
-fragment main0_out main0(main0_in in [[stage_in]])
+fragment main0_out main0()
 {
     main0_out out = {};
-    out.outColor = float4(in.fragColor, 1.0);
+    out.Color = float4(0.800000011920928955078125, 0.60000002384185791015625, 0.4000000059604644775390625, 1.0);
     return out;
 }
 
